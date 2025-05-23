@@ -865,8 +865,8 @@ class SetupWizardWindow(Gtk.Window):
         self.progress_bar.set_text("0 %")
         self.progress_bar.show()
 
-        # wrzuć do panelu
-        for w in (lbl, self.progress_bar):
+        # wrzuć do panelu (etykieta + pasek)
+        for w in (lbl, self.progress_label, self.progress_bar):
             self.step_box.pack_start(w, False, False, 10)
         self.step_box.show_all()
 
@@ -942,6 +942,10 @@ class SetupWizardWindow(Gtk.Window):
 
     def _extract_stage3(self, tarball):
         # --- jeden, wspólny pasek dla pobierania i rozpakowywania ---
+        if not self.progress_label.get_parent():
+            self.step_box.pack_start(self.progress_label, False, False, 10)
+        self.progress_label.set_text(i18n.MESSAGES["extracting_text"])
+        self.progress_label.show()
         if hasattr(self, "progress_bar") and self.progress_bar.get_parent():
             self.prog = self.progress_bar          # ← re-use
         else:
@@ -1182,18 +1186,6 @@ class SetupWizardWindow(Gtk.Window):
             self._copy_helper_tree("/mnt/gentoo")
         except Exception as e:
             return self._error_dialog(f"Błąd kopiowania plików:\n{e}")
-
-        if tar_src.exists():
-            try:
-                if dest_dir.exists():
-                    shutil.rmtree(dest_dir)           # usuń poprzednią wersję
-                shutil.unpack_archive(str(tar_src), "/mnt/gentoo")
-            except Exception as e:
-                return self._error_dialog(f"Błąd rozpakowywania paczki:\n{e}")
-
-        # Determine if this is the first run (sync + eix + python)
-        sync_flag = Path("/mnt/gentoo/system.txt")
-        first_run = not (sync_flag.exists() and sync_flag.read_text().strip() == "sync")
 
         # Determine if this is the first run (sync + eix + python)
         sync_flag = Path("/mnt/gentoo/system.txt")
@@ -1632,26 +1624,26 @@ class SetupWizardWindow(Gtk.Window):
                 f'export NASZAMD="{self.NASZAMD}" '
                 f'export NASZINTELIRIS="{self.NASZINTELIRIS}"'
             )),
-            (i18n.MESSAGES["step_config_makeconf_initial"],
- f"""cat <<'EOF' >/etc/portage/make.conf
+#            (i18n.MESSAGES["step_config_makeconf_initial"],
+ #f"""cat <<'EOF' >/etc/portage/make.conf
 # These settings were set by the catalyst build script that automatically
 # built this stage.
 # Please consult /usr/share/portage/config/make.conf.example for a more
 # detailed example.
-COMMON_FLAGS="-O3 -pipe -flto"
-CFLAGS="${{COMMON_FLAGS}}"
-CXXFLAGS="${{COMMON_FLAGS}}"
-FCFLAGS="${{COMMON_FLAGS}}"
-FFLAGS="${{COMMON_FLAGS}}"
-VIDEO_CARDS="{self.NASZINTEL} {self.NASZNVIDIA} {self.NASZAMD} {self.NASZINTELIRIS}"
-MAKEOPTS="-j{self.NASZCOR}"
+#COMMON_FLAGS="-O3 -pipe -flto"
+#CFLAGS="${{COMMON_FLAGS}}"
+#CXXFLAGS="${{COMMON_FLAGS}}"
+#FCFLAGS="${{COMMON_FLAGS}}"
+#FFLAGS="${{COMMON_FLAGS}}"
+#VIDEO_CARDS="{self.NASZINTEL} {self.NASZNVIDIA} {self.NASZAMD} {self.NASZINTELIRIS}"
+#MAKEOPTS="-j{self.NASZCOR}"
 # NOTE: This stage was built with the bindist USE flag enabled
 
 # This sets the language of build output to English.
 # Please keep this setting intact when reporting bugs.
-LC_MESSAGES=C.utf8
-EOF"""
-),
+#LC_MESSAGES=C.utf8
+#EOF"""
+#),
             (i18n.MESSAGES["step_generate_locales"],
  f"""cat <<'EOF'>> /etc/locale.gen
 {self.LOCALE}.UTF-8 UTF-8
@@ -1660,7 +1652,7 @@ EOF"""
 ),
             (i18n.MESSAGES["step_eselect_locale"], f"locale-gen && eselect locale set {self.LOCALE}.utf8"),
             (i18n.MESSAGES["step_sync_portage"], 'env-update && source /etc/profile && emerge --sync'),
-            (i18n.MESSAGES["step_update_world"], 'env-update && source /etc/profile && emerge --update --deep --newuse @world'),
+            #(i18n.MESSAGES["step_update_world"], 'env-update && source /etc/profile && emerge --update --deep --newuse @world'),
             (i18n.MESSAGES["step_config_makeconf_final"],
  f"""cat <<'EOF' >/etc/portage/make.conf
 CHOST="x86_64-pc-linux-gnu"
@@ -1756,7 +1748,7 @@ EOF"""
 
         # Which steps should be executed in the external terminal?
         external = {
-            i18n.MESSAGES["step_update_world"],
+            #i18n.MESSAGES["step_update_world"],
             i18n.MESSAGES["step_install_kernel"],
             i18n.MESSAGES["step_genkernel"],
             i18n.MESSAGES["step_repo"],
@@ -1825,10 +1817,9 @@ EOF"""
                             (r">>> Test", "Testing..."),
                         ]
 
-                        m2 = re.search(r'>>> Emerging \((\d+) of (\d+)\)\s+([^\s]+)', clean)
-                        m1 = re.search(r'\[(\d+)\/(\d+)\]\s+(.+)', clean)
-                        m_pct = re.search(r'\[\s*(\d{1,3})%\]', clean)
-
+                        m2 = re.search(r'>>> (?:Emerging|Installing) \(\s*(\d+)\s+of\s+(\d+)\s*\)\s+([^\s]+)', clean)
+                        m1 = re.search(r'\[\s*(\d+)\s*(?:\/|of)\s*(\d+)\s*\]\s+(.+)', clean)
+                        m_pct = re.search(r'\[\s*(\d{1,3})\s*%\]\s+(.+)', clean)
                         # --- OBSŁUGA LABELA ---
                         if m2:
                             i, tot, full = m2.groups()
