@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Gentoo Helper
+Comment=Gentoo graphical installer
+Exec=pkexec python3 /opt/Gento_Helper/main.py
+Icon=gento-helper
+Terminal=false
+Categories=System;
