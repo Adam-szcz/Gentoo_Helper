@@ -138,5 +138,7 @@ MESSAGES = {
         " • 3 MB (sin formatear) — flag: bios_grub, grub_bios\n"
         " • resto del disco ext4 — sistema de archivos /"
     ),
-
+    "missing_package": _("Paquete {pkg} no encontrado."),
+    "install_prompt": _("¿Desea instalar el paquete {pkg}?"),
+    "install_failed": _("La instalación del paquete {pkg} ha fallado."),
 }

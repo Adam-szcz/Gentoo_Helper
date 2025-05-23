@@ -129,5 +129,7 @@ MESSAGES = {
         "Suggerimento: usa una password forte e univoca!"
     ),
     "btn_set_password": _("Imposta la password utente"),
-
+    "missing_package": _("Pacchetto {pkg} non trovato."),
+    "install_prompt": _("Vuoi installare il pacchetto {pkg}?"),
+    "install_failed": _("Installazione del pacchetto {pkg} non riuscita."),
 }

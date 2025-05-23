@@ -131,5 +131,7 @@ MESSAGES = {
         "Astuce : utilisez un mot de passe fort et unique !"
     ),
     "btn_set_password": _("Définir le mot de passe de l'utilisateur"),
-
+    "missing_package": _("Paquet {pkg} non trouvé."),
+    "install_prompt": _("Voulez-vous installer le paquet {pkg} ?"),
+    "install_failed": _("L'installation du paquet {pkg} a échoué."),
 }

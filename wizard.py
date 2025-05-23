@@ -18,7 +18,7 @@ import re
 import pty
 import gi
 from disk_utils import list_disks, list_partitions
-
+import shutil
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango
 
@@ -140,6 +140,15 @@ class SetupWizardWindow(Gtk.Window):
         }
 
         super().__init__(title=i18n.MESSAGES["app_title"])
+        if not shutil.which("gparted"):
+            if self._offer_install("sys-block/gparted"):
+                sys.exit(0)
+            sys.exit(0)  # zamiast return
+
+        if not shutil.which("links"):
+            if self._offer_install("www-client/links"):
+                sys.exit(0)
+            sys.exit(0)
         # ---- ADD CSS FOR TRANSPARENT BACKGROUND ----
         style_provider = Gtk.CssProvider()
         style_provider.load_from_data(b"""
@@ -225,8 +234,40 @@ class SetupWizardWindow(Gtk.Window):
         # Step 1: disk selection
         self._build_welcome()
         self.show_all()
-
     # ------------------------------------------------------------------
+    def _offer_install(self, pkg_name: str) -> bool:
+        """Wyświetla dialog z propozycją instalacji i zwraca True, jeśli OK."""
+        dialog = Gtk.MessageDialog(
+            parent=self,
+            flags=0,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text=i18n.MESSAGES["missing_package"].format(pkg=pkg_name),
+        )
+        dialog.format_secondary_text(
+            i18n.MESSAGES["install_prompt"].format(pkg=pkg_name)
+        )
+        response = dialog.run()
+        dialog.destroy()
+
+        if response == Gtk.ResponseType.OK:
+            # uruchom instalację (Gentoo = emerge)
+            try:
+                subprocess.check_call(["sudo", "emerge", pkg_name])
+            except subprocess.CalledProcessError:
+                # opcjonalnie pokaż błąd instalacji
+                err = Gtk.MessageDialog(
+                    parent=self,
+                    flags=0,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.CLOSE,
+                    text=i18n.MESSAGES["install_failed"].format(pkg=pkg_name),
+                )
+                err.run()
+                err.destroy()
+            return True
+        return False
+
     def _copy_helper_tree(self, dest_root: str):
         """
         Kopiuje Gentoo Helpera do <dest_root>/gento_helper
@@ -900,7 +941,7 @@ class SetupWizardWindow(Gtk.Window):
 
 
                 # pobrane – przechodzimy do rozpakowywania
-                GLib.idle_add(self.progress_label.set_text, "Rozpakowywanie…")
+                #GLib.idle_add(self.progress_label.set_text, "Rozpakowywanie…")
                 GLib.idle_add(self.progress_bar.set_text, i18n.MESSAGES["extracting_text"])
                 GLib.idle_add(self._extract_stage3, dest)
 
@@ -955,13 +996,13 @@ class SetupWizardWindow(Gtk.Window):
         self.prog.set_show_text(False)             # bez napisu
         self.prog.set_fraction(0)
 
-
         def pulse():
             # pulse the progress bar to indicate ongoing extraction
             self.prog.pulse()
             return True
 
-        GLib.timeout_add(150, pulse)
+        # zapamiętaj ID timera, by móc go potem zatrzymać
+        self._pulse_timer_id = GLib.timeout_add(150, pulse)
 
         def untar():
             # extract the stage3 archive
@@ -976,12 +1017,17 @@ class SetupWizardWindow(Gtk.Window):
                 os.remove(tarball)
             except OSError:
                 pass
+
+            # zatrzymaj timer pulsowania paska
+            GLib.source_remove(self._pulse_timer_id)
+
             # cleanup and advance
             GLib.idle_add(self.prog.destroy)
             GLib.idle_add(self._finish_stage3)
 
         # run extraction in a background thread
         threading.Thread(target=untar, daemon=True).start()
+
 
     def _bind_system_dirs(self):
         """
@@ -1780,6 +1826,8 @@ EOF"""
                 os.close(slave_fd)
 
                 with os.fdopen(master_fd) as stdout:
+                    seen_progress = False
+                    last_i = last_tot = last_pkg = None
                     while True:
                         try:
                             line = stdout.readline()
@@ -1787,14 +1835,22 @@ EOF"""
                                 break
                         except OSError:
                             break
-                        # ─── DODAJ TEN FRAGMENT ABY PRZYWRÓCIĆ LOGI W TERMINALU ───
+
                         if label in external:
                             sys.stdout.write(line)
                             sys.stdout.flush()
+
                         clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
 
                         if self.verbose_gui:
                             GLib.idle_add(self.append_log, clean.rstrip('\n'))
+                
+                        # Jednoznacznie wykrywaj ">>> Emerging"
+                        if '>>> Emerging' in clean:
+                            seen_progress = True
+                            GLib.idle_add(self.progress_bar.set_fraction, 0.0)
+                            GLib.idle_add(self.progress_bar.set_text, "0 %")
+                            GLib.idle_add(self.progress_bar.show)
 
                         m2 = re.search(r'>>> (?:Emerging|Installing) \(\s*(\d+)\s+of\s+(\d+)\s*\)\s+([^\s]+)', clean)
                         m1 = re.search(r'\[\s*(\d+)\s*(?:\/|of)\s*(\d+)\s*\]\s+(.+)', clean)
@@ -1810,9 +1866,7 @@ EOF"""
 
                             GLib.idle_add(self.progress_bar.set_fraction, frac)
                             GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
-                            if not seen_progress:
-                                seen_progress = True
-                                GLib.idle_add(self.progress_bar.show)
+                            GLib.idle_add(self.progress_bar.show)
 
                             GLib.idle_add(
                                 self.emerge_output_label.set_text,
@@ -1835,7 +1889,7 @@ EOF"""
                                         self.emerge_output_label.set_text,
                                         f"[{last_i}/{last_tot}] {last_pkg}  {txt}"
                                     )
-
+                
                         if m1 or m_pct:
                             GLib.idle_add(self.substep_bar.show)
                             if m1:
@@ -1847,6 +1901,11 @@ EOF"""
 
                         if ">>> Completed" in clean:
                             GLib.idle_add(self.substep_bar.hide)
+
+        # Usuń pulsowanie, żeby sprawdzić poprawność wyświetlania
+        # if not seen_progress and not (m2 or m1 or m_pct):
+        #     GLib.idle_add(self.progress_bar.pulse)
+
 
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)

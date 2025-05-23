@@ -138,4 +138,7 @@ MESSAGES = {
         " • 3 MB（未格式化）— 标志：bios_grub，grub_bios\n"
         " • 剩余空间 ext4 — 根文件系统 /"
     ),
+    "missing_package": _("未找到软件包 {pkg}。"),
+    "install_prompt": _("您想安装软件包 {pkg} 吗？"),
+    "install_failed": _("安装软件包 {pkg} 失败。"),
 }

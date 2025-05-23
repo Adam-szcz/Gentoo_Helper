@@ -139,5 +139,8 @@ MESSAGES = {
                 "  BIOS / MBR (Legacy):\n"
                 "  • 3 MB  (nieformatowana)  –  flaga: bios_grub, grub_bios\n"
                 "  • reszta  ext4                   –  system plików /"
-    ),                               
+    ), 
+    "missing_package": _("Nie znaleziono pakietu {pkg}."),
+    "install_prompt": _("Czy chcesz zainstalować pakiet {pkg}?"),
+    "install_failed": _("Instalacja pakietu {pkg} nie powiodła się."),                              
 }

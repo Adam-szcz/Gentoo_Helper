@@ -139,4 +139,7 @@ MESSAGES = {
         " ・3 MB（未フォーマット）— フラグ: bios_grub, grub_bios\n"
         " ・残りを ext4 — ルートファイルシステム /"
     ),
+    "missing_package": _("パッケージ {pkg} が見つかりません。"),
+    "install_prompt": _("{pkg} パッケージをインストールしますか？"),
+    "install_failed": _("{pkg} パッケージのインストールに失敗しました。"),
 }
