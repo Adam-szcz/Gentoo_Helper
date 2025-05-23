@@ -840,18 +840,17 @@ class SetupWizardWindow(Gtk.Window):
     def _download_openrc(self, _btn):
         from pathlib import Path
         import urllib.request, threading, os
+        # 1) – upewnij się, że /mnt/gentoo jest podmontowane
+        self._ensure_mounted(self.root_part, "/mnt/gentoo")
 
-        # 1) – jeśli już gotowe, pomiń wszystko
+        # 2) – jeśli już gotowe, pomiń wszystko
         if Path("/mnt/gentoo/system.txt").exists():
             return self._finish_stage3()
 
-        # 2) – jeśli archiwum już leży w /mnt/gentoo, od razu rozpakuj
+        # 3) – jeśli archiwum już leży w /mnt/gentoo, od razu rozpakuj
         prev = self._find_stage3()
         if prev:
             return self._extract_stage3(prev)
-
-        # 3) – upewnij się, że /mnt/gentoo jest podmontowane
-        self._ensure_mounted(self.root_part, "/mnt/gentoo")
 
         # 4) – wyczyść panel i pokaż TYLKO pasek
         self.step_box.foreach(lambda w: self.step_box.remove(w))
@@ -1284,7 +1283,7 @@ class SetupWizardWindow(Gtk.Window):
             "graniterapids","graniterapids-d","arrowlake","arrowlake-s",
             "pantherlake","intel","lujiazui","yongfeng","geode","k6","athlon",
             "k8","amdfam10","bdver1","bdver2","bdver3","bdver4","btver1",
-            "btver2","znver1","znver2","znver3","znver4","znver5"
+            "btver2","znver1","znver2","znver3","znver4","znver5","native"
         ]
         # ─────────────────────────────────────────────────────────────
 
@@ -1761,24 +1760,22 @@ EOF"""
 
         total = len(steps)
         for idx, (label, cmd) in enumerate(steps, 1):
-            # ─── NA POCZĄTKU KAŻDEGO KROKU LOGUJEMY GO DO GUI ───
             GLib.idle_add(self.append_log, f"→ {label}")
-            # ──────────────────────────────────────────────────────
 
-            # zawsze pod chroot
             full_cmd = ["chroot", "/mnt/gentoo", "/bin/bash", "-lc", cmd]
 
-            if 'emerge' in cmd:
+            GLib.idle_add(self.progress_bar.hide)
+            GLib.idle_add(self.substep_bar.hide)
+            GLib.idle_add(self.emerge_output_label.set_text, "")
 
-                # chowamy pasek na start emerge
-                GLib.idle_add(self.progress_bar.hide)
+            if 'emerge' in cmd:
                 seen_progress = False
                 last_i = last_tot = last_pkg = None
                 master_fd, slave_fd = pty.openpty()
                 proc = subprocess.Popen(
                     full_cmd,
                     stdout=slave_fd, stderr=slave_fd,
-                    bufsize=0, text=True, universal_newlines=True
+                    bufsize=0, text=True
                 )
                 os.close(slave_fd)
 
@@ -1790,118 +1787,94 @@ EOF"""
                                 break
                         except OSError:
                             break
-
-                        # Remove ANSI escape codes from output
-                        clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
-
-                        # Echo to terminal for external steps
+                        # ─── DODAJ TEN FRAGMENT ABY PRZYWRÓCIĆ LOGI W TERMINALU ───
                         if label in external:
                             sys.stdout.write(line)
                             sys.stdout.flush()
+                        clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
 
-                        # Log emerge output if verbose mode
                         if self.verbose_gui:
                             GLib.idle_add(self.append_log, clean.rstrip('\n'))
 
-                        # Regexes for progress detection
+                        m2 = re.search(r'>>> (?:Emerging|Installing) \(\s*(\d+)\s+of\s+(\d+)\s*\)\s+([^\s]+)', clean)
+                        m1 = re.search(r'\[\s*(\d+)\s*(?:\/|of)\s*(\d+)\s*\]\s+(.+)', clean)
+                        m_pct = re.search(r'\[\s*(\d{1,3})\s*%\]\s+(.+)', clean)
+
+                        if m2:
+                            cur, tot, full = m2.groups()
+                            pkg = full.split("::")[0]
+                            pkg = re.sub(r"-\d[0-9._-]*$", "", pkg)
+                            last_i, last_tot, last_pkg = cur, tot, pkg
+                            frac = int(cur) / int(tot)
+                            pct = int(frac * 100)
+
+                            GLib.idle_add(self.progress_bar.set_fraction, frac)
+                            GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
+                            if not seen_progress:
+                                seen_progress = True
+                                GLib.idle_add(self.progress_bar.show)
+
+                            GLib.idle_add(
+                                self.emerge_output_label.set_text,
+                                f"[{cur}/{tot}] {pkg}"
+                            )
+
                         phase_patterns = [
                             (r">>> Unpacking", "Unpacking..."),
                             (r">>> Installing", "Installing..."),
                             (r">>> Completed", "Completed!"),
                             (r">>> Emerging", "Emerging..."),
-                            (r">>> Install", "Installing..."),
-                            (r"Install", "Installing..."),
                             (r"Copying", "Copying..."),
                             (r"checking", "Checking..."),
-                            (r">>> Source", "Sourcing..."),
-                            (r">>> Test", "Testing..."),
                         ]
 
-                        m2 = re.search(r'>>> (?:Emerging|Installing) \(\s*(\d+)\s+of\s+(\d+)\s*\)\s+([^\s]+)', clean)
-                        m1 = re.search(r'\[\s*(\d+)\s*(?:\/|of)\s*(\d+)\s*\]\s+(.+)', clean)
-                        m_pct = re.search(r'\[\s*(\d{1,3})\s*%\]\s+(.+)', clean)
-                        # --- OBSŁUGA LABELA ---
-                        if m2:
-                            i, tot, full = m2.groups()
-                            pkg = full.split('::')[0]
-                            pkg = re.sub(r'-[0-9].*$', '', pkg)
-                            last_i, last_tot, last_pkg = i, tot, pkg
-                            label_text = f"[{i}/{tot}] {pkg}"
-                            GLib.idle_add(self.emerge_output_label.set_text, label_text)
-                        else:
-                            phase = ""
-                            for pat, txt in phase_patterns:
-                                if re.search(pat, clean):
-                                    phase = txt
-                                    break
-                            if phase and last_i and last_tot and last_pkg:
-                                label_text = f"[{last_i}/{last_tot}] {last_pkg}  {phase}"
-                                GLib.idle_add(self.emerge_output_label.set_text, label_text)
+                        for pat, txt in phase_patterns:
+                            if re.search(pat, clean):
+                                if last_i and last_tot and last_pkg:
+                                    GLib.idle_add(
+                                        self.emerge_output_label.set_text,
+                                        f"[{last_i}/{last_tot}] {last_pkg}  {txt}"
+                                    )
 
-                        # --- OBSŁUGA PASKÓW POSTĘPU (niezależnie od labela!) ---
-                        if m2:
-                            # Główny pasek postępu
-                            fraction = int(i) / int(tot)
-                            GLib.idle_add(self.progress_bar.set_fraction, fraction)
-                            if not seen_progress:
-                                seen_progress = True
-                                GLib.idle_add(self.progress_bar.show)
-                            GLib.idle_add(self.substep_bar.hide)
+                        if m1 or m_pct:
+                            GLib.idle_add(self.substep_bar.show)
+                            if m1:
+                                sub, subtot, _ = m1.groups()
+                                GLib.idle_add(self.substep_bar.set_fraction, int(sub) / int(subtot))
+                            else:
+                                pct, _ = m_pct.groups()
+                                GLib.idle_add(self.substep_bar.set_fraction, int(pct) / 100)
 
-                        if m1:
-                            i, tot, _ = m1.groups()
-                            fraction = int(i) / int(tot)
-                            GLib.idle_add(self.substep_bar.set_fraction, fraction)
-                            GLib.idle_add(self.substep_bar.show)
-                            if int(i) >= int(tot):
-                                GLib.idle_add(self.substep_bar.hide)
-                        elif m_pct:
-                            pct = int(m_pct.group(1))
-                            GLib.idle_add(self.substep_bar.set_fraction, pct / 100)
-                            GLib.idle_add(self.substep_bar.show)
-                            if pct >= 100:
-                                GLib.idle_add(self.substep_bar.hide)
-                        else:
+                        if ">>> Completed" in clean:
                             GLib.idle_add(self.substep_bar.hide)
-                            if not seen_progress:
-                                GLib.idle_add(self.progress_bar.pulse)
 
                 proc.wait()
+                GLib.idle_add(self.progress_bar.hide)
+                GLib.idle_add(self.substep_bar.hide)
+                GLib.idle_add(self.emerge_output_label.set_text, "")
 
             elif 'genkernel' in cmd:
-                GLib.idle_add(self.progress_bar.hide)
                 genkernel_steps = [
                     "kernel: >> Initializing",
                     "Running 'make mrproper'",
                     "Running 'make oldconfig'",
                     "We are now building Linux kernel",
-                    "Compiling bzImage",
-                    "Compiling modules",
-                    "Installing modules",
+                    "Compiling",
+                    "Installing",
                     "Generating module dependency data",
                     "Compiling out-of-tree module",
                     "Saving config of successful build",
                     "initramfs: >> Initializing",
                     "Appending devices cpio data",
-                    "Appending base_layout cpio data",
-                    "Appending util-linux cpio data",
-                    "Appending eudev cpio data",
-                    "Appending auxiliary cpio data",
                     "Appending busybox cpio data",
                     "Appending modprobed cpio data",
-                    "Appending modules cpio data",
                     "Deduping cpio data",
-                    "Pre-generating initramfs",
                     "Compressing cpio data",
                     "Kernel compiled successfully!"
                 ]
-                current_genkernel_idx = -1
+                total_genkernel_steps = len(genkernel_steps)
                 master_fd, slave_fd = pty.openpty()
-                proc = subprocess.Popen(
-                    full_cmd,
-                    stdout=slave_fd, stderr=slave_fd,
-                    bufsize=0, text=True, universal_newlines=True
-                )
+                proc = subprocess.Popen(full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0, text=True)
                 os.close(slave_fd)
 
                 with os.fdopen(master_fd) as stdout:
@@ -1912,60 +1885,46 @@ EOF"""
                                 break
                         except OSError:
                             break
-
-                        clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
-
                         if label in external:
                             sys.stdout.write(line)
                             sys.stdout.flush()
-
-                        if self.verbose_gui:
-                            GLib.idle_add(self.append_log, clean.rstrip('\n'))
-
+                        clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
                         for idx2, step in enumerate(genkernel_steps):
                             if step in clean:
-                                current_genkernel_idx = idx2
-                                label_text = f"[genkernel] {step}"
-                                GLib.idle_add(self.emerge_output_label.set_text, label_text)
-                                progress = (idx2 + 1) / len(genkernel_steps)
+                                progress = (idx2 + 1) / total_genkernel_steps
+                                pct = int(progress * 100)
                                 GLib.idle_add(self.progress_bar.set_fraction, progress)
+                                GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
                                 GLib.idle_add(self.progress_bar.show)
+                                GLib.idle_add(
+                                    self.emerge_output_label.set_text,
+                                    f"[genkernel] {step}"
+                                )
                                 break
-                        else:
-                            GLib.idle_add(self.progress_bar.pulse)
-
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.emerge_output_label.set_text, "")
-                status = "OK" if proc.returncode == 0 else f"FAIL ({proc.returncode})"
-                GLib.idle_add(self.append_log, f"✓ {label}: {status}")
 
             else:
-                import sys
-                if label in external and sys.stdout.isatty():
-                    # Ten krok idzie na żywo do terminala
-                    proc_returncode = subprocess.call(full_cmd)
-                    proc = type('obj', (object,), {'returncode': proc_returncode})()
-                else:
-                    proc = subprocess.run(full_cmd, capture_output=True, text=True)
+                proc = subprocess.run(full_cmd, capture_output=True, text=True)
+                if self.verbose_gui:
+                    if proc.stdout:
+                        for l in proc.stdout.splitlines():
+                            GLib.idle_add(self.append_log, l)
+                    if proc.stderr:
+                        for l in proc.stderr.splitlines():
+                            GLib.idle_add(self.append_log, l)
 
-                    if self.verbose_gui:
-                        if proc.stdout:
-                            for l in proc.stdout.splitlines():
-                                GLib.idle_add(self.append_log, l)
-                        if proc.stderr:
-                            for l in proc.stderr.splitlines():
-                                GLib.idle_add(self.append_log, l)
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.substep_bar.hide)
                 GLib.idle_add(self.emerge_output_label.set_text, "")
-                status = "OK" if proc.returncode == 0 else f"FAIL ({proc.returncode})"
-                GLib.idle_add(self.append_log, f"✓ {label}: {status}")
+
+            status = "OK" if proc.returncode == 0 else f"FAIL ({proc.returncode})"
+            GLib.idle_add(self.append_log, f"✓ {label}: {status}")
 
         GLib.idle_add(self._stop_install_timer)
         GLib.idle_add(self.append_log, i18n.MESSAGES["install_done_title"])
         GLib.idle_add(self._build_step_user_passwd)
-
 
     def get_selected_desktop_env(self):
         for btn in self.desktop_env_buttons:
