@@ -1938,16 +1938,18 @@ EOF"""
                 )
                 os.close(slave_fd)
 
-                with os.fdopen(master_fd) as stdout:
-                    seen_progress = False
-                    last_i = last_tot = last_pkg = None
+                with os.fdopen(master_fd, "rb") as stdout_b:
                     while True:
                         try:
-                            line = stdout.readline()
-                            if not line:
+                            raw = stdout_b.readline()
+                            if not raw:
                                 break
                         except OSError:
                             break
+
+                        # zamiast crash-ującego .readline() w trybie tekstowym,
+                        # dekodujemy z replace:
+                        line = raw.decode("utf-8", errors="replace")
 
                         if label in external:
                             sys.stdout.write(line)
@@ -1972,7 +1974,8 @@ EOF"""
                         if m2:
                             cur, tot, full = m2.groups()
                             pkg = full.split("::")[0]
-                            pkg = re.sub(r"-\d[0-9._-]*$", "", pkg)
+                            #pkg = re.sub(r"-\d[0-9._-]*$", "", pkg)
+                            pkg = re.sub(r"-[0-9].*$", "", pkg)
                             last_i, last_tot, last_pkg = cur, tot, pkg
                             frac = int(cur) / int(tot)
                             pct = int(frac * 100)
@@ -1988,11 +1991,11 @@ EOF"""
 
                         phase_patterns = [
                             (r">>> Unpacking", "Unpacking..."),
+                            (r">>> Compiling", "Compliling"),
                             (r">>> Installing", "Installing..."),
-                            (r">>> Completed", "Completed!"),
+                            (r">>> Completed", "Completed..."),
                             (r">>> Emerging", "Emerging..."),
                             (r"Copying", "Copying..."),
-                            (r"checking", "Checking..."),
                         ]
 
                         for pat, txt in phase_patterns:
@@ -2031,7 +2034,8 @@ EOF"""
                     "Running 'make mrproper'",
                     "Running 'make oldconfig'",
                     "We are now building Linux kernel",
-                    "Compiling",
+                    "Compiling bzImage",
+                    "Compiling modules",
                     "Installing",
                     "Generating module dependency data",
                     "Compiling out-of-tree module",
@@ -2046,23 +2050,31 @@ EOF"""
                 ]
                 total_genkernel_steps = len(genkernel_steps)
                 master_fd, slave_fd = pty.openpty()
-                proc = subprocess.Popen(full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0, text=True)
+                proc = subprocess.Popen(full_cmd, stdout=slave_fd, stderr=slave_fd,
+                                        bufsize=0, text=True)
                 os.close(slave_fd)
 
-                with os.fdopen(master_fd) as stdout:
+                patterns = {
+                    "Compiling bzImage":   r"Compiling\s+.*\s+bzImage",
+                    "Compiling modules":   r"Compiling\s+.*\s+modules?"
+                }
+
+                with os.fdopen(master_fd, "rb") as stdout_b:
                     while True:
                         try:
-                            line = stdout.readline()
-                            if not line:
+                            raw = stdout_b.readline()
+                            if not raw:
                                 break
                         except OSError:
                             break
-                        if label in external:
-                            sys.stdout.write(line)
-                            sys.stdout.flush()
-                        clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
+
+                        # … usuń ANSI i zdekoduj do clean …
+                        clean_bytes = re.sub(rb'\x1B\[[0-?]*[ -/]*[@-~]', b'', raw)
+                        clean = clean_bytes.decode("utf-8", errors="replace")
+
                         for idx2, step in enumerate(genkernel_steps):
-                            if step in clean:
+                            pat = patterns.get(step, re.escape(step))
+                            if re.search(pat, clean):
                                 progress = (idx2 + 1) / total_genkernel_steps
                                 pct = int(progress * 100)
                                 GLib.idle_add(self.progress_bar.set_fraction, progress)
@@ -2076,7 +2088,6 @@ EOF"""
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.emerge_output_label.set_text, "")
-
             else:
                 proc = subprocess.run(full_cmd, capture_output=True, text=True)
                 if self.verbose_gui:
