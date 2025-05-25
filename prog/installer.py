@@ -259,19 +259,21 @@ class Installer:
             if ("perhaps you need --autounmask-write" in full
                 or "use changes are necessary to proceed" in full):
                 pkg = pkgs[0]
-                # zrób autounmask
-                subprocess.run(["emerge", "--autounmask-write", pkg], check=False)
-                subprocess.run("yes | etc-update --automode -3",
-                               shell=True, check=False)
+                # zrób autounmask z backtrack
+                subprocess.run(
+                    ["emerge", "--autounmask-write", "--autounmask-backtrack=y", pkg],
+                    check=False
+                )
+                subprocess.run("yes | etc-update --automode -3", shell=True, check=False)
 
                 # zresetuj log i pasek postępu
                 self._last_output.clear()
                 progress.set_fraction(0.0)
                 status_label.set_text(f"Autounmask i ponowna instalacja {pkg}…")
 
-                # kontynuuj w tym samym dialogu
+                # kontynuuj w tym samym dialogu, teraz z -n
                 self.run_with_progress(
-                    ["emerge"] + extra_args + pkgs,
+                    ["emerge", "-n"] + extra_args + pkgs,
                     pwd, on_update, on_finish, on_error
                 )
                 return False
@@ -294,7 +296,6 @@ class Installer:
             ).run()
             GLib.idle_add(self.parent.populate_package_list)
             return False
-
 
         self.run_with_progress(["emerge"]+extra_args+pkgs,pwd,on_update,on_finish,on_error)
         dlg.connect("response",lambda d,r: dlg.destroy() if r==Gtk.ResponseType.CANCEL else None)
