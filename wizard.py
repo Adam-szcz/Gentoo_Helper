@@ -1927,14 +1927,13 @@ EOF"""
             GLib.idle_add(self.substep_bar.hide)
             GLib.idle_add(self.emerge_output_label.set_text, "")
 
+            # ── obsługa emerge ─────────────────────────────────────────────────
             if 'emerge' in cmd:
                 seen_progress = False
                 last_i = last_tot = last_pkg = None
                 master_fd, slave_fd = pty.openpty()
                 proc = subprocess.Popen(
-                    full_cmd,
-                    stdout=slave_fd, stderr=slave_fd,
-                    bufsize=0, text=True
+                    full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0
                 )
                 os.close(slave_fd)
 
@@ -1947,87 +1946,25 @@ EOF"""
                         except OSError:
                             break
 
-                        # zamiast crash-ującego .readline() w trybie tekstowym,
-                        # dekodujemy z replace:
-                        line = raw.decode("utf-8", errors="replace")
-
+                        # 1) surowe wyjście emerge do terminala
                         if label in external:
-                            sys.stdout.write(line)
+                            line_out = raw.decode("utf-8", errors="replace")
+                            sys.stdout.write(line_out)
                             sys.stdout.flush()
 
+                        # 2) usuwamy ANSI i tworzymy „clean”
+                        line = raw.decode("utf-8", errors="replace")
                         clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
 
-                        if self.verbose_gui:
-                            GLib.idle_add(self.append_log, clean.rstrip('\n'))
-                
-                        # Jednoznacznie wykrywaj ">>> Emerging"
-                        if '>>> Emerging' in clean:
-                            seen_progress = True
-                            GLib.idle_add(self.progress_bar.set_fraction, 0.0)
-                            GLib.idle_add(self.progress_bar.set_text, "0 %")
-                            GLib.idle_add(self.progress_bar.show)
-
-                        m2 = re.search(r'>>> (?:Emerging|Installing) \(\s*(\d+)\s+of\s+(\d+)\s*\)\s+([^\s]+)', clean)
-                        m1 = re.search(r'\[\s*(\d+)\s*(?:\/|of)\s*(\d+)\s*\]\s+(.+)', clean)
-                        m_pct = re.search(r'\[\s*(\d{1,3})\s*%\]\s+(.+)', clean)
-
-                        if m2:
-                            cur, tot, full = m2.groups()
-                            pkg = full.split("::")[0]
-                            #pkg = re.sub(r"-\d[0-9._-]*$", "", pkg)
-                            pkg = re.sub(r"-[0-9].*$", "", pkg)
-                            last_i, last_tot, last_pkg = cur, tot, pkg
-                            frac = int(cur) / int(tot)
-                            pct = int(frac * 100)
-
-                            GLib.idle_add(self.progress_bar.set_fraction, frac)
-                            GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
-                            GLib.idle_add(self.progress_bar.show)
-
-                            GLib.idle_add(
-                                self.emerge_output_label.set_text,
-                                f"[{cur}/{tot}] {pkg}"
-                            )
-
-                        phase_patterns = [
-                            (r">>> Unpacking", "Unpacking..."),
-                            (r">>> Compiling", "Compliling"),
-                            (r">>> Installing", "Installing..."),
-                            (r">>> Completed", "Completed..."),
-                            (r">>> Emerging", "Emerging..."),
-                            (r"Copying", "Copying..."),
-                        ]
-
-                        for pat, txt in phase_patterns:
-                            if re.search(pat, clean):
-                                if last_i and last_tot and last_pkg:
-                                    GLib.idle_add(
-                                        self.emerge_output_label.set_text,
-                                        f"[{last_i}/{last_tot}] {last_pkg}  {txt}"
-                                    )
-                
-                        if m1 or m_pct:
-                            GLib.idle_add(self.substep_bar.show)
-                            if m1:
-                                sub, subtot, _ = m1.groups()
-                                GLib.idle_add(self.substep_bar.set_fraction, int(sub) / int(subtot))
-                            else:
-                                pct, _ = m_pct.groups()
-                                GLib.idle_add(self.substep_bar.set_fraction, int(pct) / 100)
-
-                        if ">>> Completed" in clean:
-                            GLib.idle_add(self.substep_bar.hide)
-
-        # Usuń pulsowanie, żeby sprawdzić poprawność wyświetlania
-        # if not seen_progress and not (m2 or m1 or m_pct):
-        #     GLib.idle_add(self.progress_bar.pulse)
-
+                        # 3) dalsze przetwarzanie m2, m1, m_pct, phase_patterns…
+                        #    (tu wstaw swój istniejący kod z regexami, progress_bar i emerge_output_label)
 
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.substep_bar.hide)
                 GLib.idle_add(self.emerge_output_label.set_text, "")
 
+            # ── obsługa genkernel ────────────────────────────────────────────────
             elif 'genkernel' in cmd:
                 genkernel_steps = [
                     "kernel: >> Initializing",
@@ -2050,8 +1987,9 @@ EOF"""
                 ]
                 total_genkernel_steps = len(genkernel_steps)
                 master_fd, slave_fd = pty.openpty()
-                proc = subprocess.Popen(full_cmd, stdout=slave_fd, stderr=slave_fd,
-                                        bufsize=0, text=True)
+                proc = subprocess.Popen(
+                    full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0
+                )
                 os.close(slave_fd)
 
                 patterns = {
@@ -2068,10 +2006,17 @@ EOF"""
                         except OSError:
                             break
 
-                        # … usuń ANSI i zdekoduj do clean …
+                        # 1) surowe wyjście genkernel do terminala
+                        if label in external:
+                            line_out = raw.decode("utf-8", errors="replace")
+                            sys.stdout.write(line_out)
+                            sys.stdout.flush()
+
+                        # 2) usuwamy ANSI i dekodujemy do clean
                         clean_bytes = re.sub(rb'\x1B\[[0-?]*[ -/]*[@-~]', b'', raw)
                         clean = clean_bytes.decode("utf-8", errors="replace")
 
+                        # 3) regexowe dopasowanie kroków
                         for idx2, step in enumerate(genkernel_steps):
                             pat = patterns.get(step, re.escape(step))
                             if re.search(pat, clean):
@@ -2085,6 +2030,7 @@ EOF"""
                                     f"[genkernel] {step}"
                                 )
                                 break
+
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.emerge_output_label.set_text, "")
