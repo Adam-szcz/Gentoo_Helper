@@ -140,15 +140,11 @@ class SetupWizardWindow(Gtk.Window):
         }
 
         super().__init__(title=i18n.MESSAGES["app_title"])
-        if not shutil.which("gparted"):
-            if self._offer_install("sys-block/gparted"):
-                sys.exit(0)
-            sys.exit(0)  # zamiast return
-
-        if not shutil.which("links"):
-            if self._offer_install("www-client/links"):
-                sys.exit(0)
-            sys.exit(0)
+        # kolejno wymagane narzędzia
+        for bin_, pkg in (("gparted", "sys-block/gparted"),
+                          ("links",   "www-client/links")):
+            if not self._ensure_tool(bin_, pkg):
+                return          # poczekaj, aż instalacja się skończy albo użytkownik zrezygnuje
         # ---- ADD CSS FOR TRANSPARENT BACKGROUND ----
         style_provider = Gtk.CssProvider()
         style_provider.load_from_data(b"""
@@ -235,6 +231,42 @@ class SetupWizardWindow(Gtk.Window):
         self._build_welcome()
         self.show_all()
     # ------------------------------------------------------------------
+    def _ensure_tool(self, binary: str, ebuild: str) -> bool:
+        """Sprawdź binarkę; w razie potrzeby zapytaj o instalację
+           i uruchom ją w terminalu.  Zwraca True, gdy program GOTOWY."""
+        if shutil.which(binary):
+            return True                      # już zainstalowany
+
+        # pytanie do użytkownika
+        dlg = Gtk.MessageDialog(
+            parent=self, flags=0,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text=f"Nie znaleziono programu {binary}.",
+            secondary_text=f"Czy chcesz zainstalować {ebuild}?"
+        )
+        ok = dlg.run() == Gtk.ResponseType.OK
+        dlg.destroy()
+        if not ok:
+            return False                     # użytkownik anulował
+
+        # schowaj kreator na czas instalacji, żeby nie był „zamrożony”
+        self.hide()
+
+        # callback po zakończeniu emerge
+        def _after_install(_pid, _status):
+            if shutil.which(binary):
+                # sukces → restartujemy cały program
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            else:
+                # porażka → pokaż błąd i wróć
+                self.show()
+                self._error_dialog(f"Instalacja {binary} nie powiodła się.")
+
+        # emerge w terminalu; okno terminala zniknie samo gdy polecenie dobiegnie końca
+        self._run_in_terminal(["sudo", "emerge", ebuild], callback=_after_install)
+        return False                         # wstrzymujemy dalsze akcje
+    # ------------------------------------------------------------------
     def _offer_install(self, pkg_name: str) -> bool:
         """Wyświetla dialog z propozycją instalacji i zwraca True, jeśli OK."""
         dialog = Gtk.MessageDialog(
@@ -268,34 +300,105 @@ class SetupWizardWindow(Gtk.Window):
             return True
         return False
 
-    def _copy_helper_tree(self, dest_root: str):
-        """
-        Kopiuje Gentoo Helpera do <dest_root>/gento_helper
-        – pomija katalogi __pycache__ i pliki *.pyc.
-        """
-        from pathlib import Path, PurePosixPath
-        import shutil, os, fnmatch
+    def _install_app_in_chroot(self):
+        import os, shutil, subprocess
 
-        src_root = Path(__file__).resolve().parent          # katalog z wizard.py
-        dest_dir = Path(dest_root) / "gento_helper"
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        dest = "/mnt/gentoo/opt/Gento_Helper"
+        os.makedirs(dest, exist_ok=True)
 
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
+        # 1) Kopiuj katalogi
+        for sub in ("assets", "languages", "prog"):
+            shutil.copytree(
+                os.path.join(project_root, sub),
+                os.path.join(dest, sub),
+                dirs_exist_ok=True
+            )
 
-        def _ignore(path, names):
-            ignored = []
-            for n in names:
-                if n == "__pycache__" or fnmatch.fnmatch(n, "*.pyc"):
-                    ignored.append(n)
-            return set(ignored)
+        # 2) Kopiuj pliki
+        for fn in (
+            "com.gento.helper.policy",
+            "GentooHelper.desktop",
+            "README.md", "disk_utils.py",
+            "main.py", "wizard.py",
+        ):
+            shutil.copy(
+                os.path.join(project_root, fn),
+                dest
+            )
 
-        shutil.copytree(src_root, dest_dir, ignore=_ignore)
+        # 3) PolicyKit i główny .desktop w chroot
+        pk_dst  = "/mnt/gentoo/usr/share/polkit-1/actions"
+        app_dst = "/mnt/gentoo/usr/share/applications"
+        os.makedirs(pk_dst, exist_ok=True)
+        os.makedirs(app_dst, exist_ok=True)
+        shutil.copy(
+            os.path.join(project_root, "com.gento.helper.policy"),
+            pk_dst
+        )
+        shutil.copy(
+            os.path.join(project_root, "GentooHelper.desktop"),
+            app_dst
+        )
 
-        # pliki, których naprawdę nie chcemy przenosić (opcjonalnie)
-        for extra in ("gento_helper.tar.gz",):
-            p = dest_dir / PurePosixPath(extra)
-            if p.exists():
-                p.unlink()
+        # 4) Utwórz też GentooHelperInstaller.desktop w chroot
+        installer = "\n".join([
+            "[Desktop Entry]",
+            "Type=Application",
+            "Name=Gento Helper Installer",
+            "Comment=Gentoo Helper – zarządzaj pakietami po instalacji",
+            "Exec=python3 /opt/Gento_Helper/prog/main.py",
+            "Icon=gento-helper",
+            "Terminal=false",
+            "Categories=System;"
+        ]) + "\n"
+        with open(os.path.join(app_dst, "GentooHelperInstaller.desktop"), "w") as f:
+            f.write(installer)
+
+        # 5) Ikona i cache ikon w chroot
+        ico_src = os.path.join(project_root, "assets", "splashicon.png")
+        ico_dst = "/mnt/gentoo/usr/share/pixmaps/gento-helper.png"
+        os.makedirs(os.path.dirname(ico_dst), exist_ok=True)
+        shutil.copy(ico_src, ico_dst)
+        subprocess.run(
+            ["chroot", "/mnt/gentoo",
+             "gtk-update-icon-cache", "-f", "/usr/share/icons/hicolor"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+
+    def _install_host_desktop_entry(self):
+        import os, shutil, subprocess
+
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        host_apps = "/usr/share/applications"
+        os.makedirs(host_apps, exist_ok=True)
+
+        shutil.copy(
+            os.path.join(project_root, "GentooHelper.desktop"),
+            host_apps
+        )
+
+        installer = "\n".join([
+            "[Desktop Entry]",
+            "Type=Application",
+            "Name=Gento Helper Installer",
+            "Comment=Gentoo Helper – zarządzaj pakietami po instalacji",
+            "Exec=python3 /opt/Gento_Helper/prog/main.py",
+            "Icon=gento-helper",
+            "Terminal=false",
+            "Categories=System;"
+        ]) + "\n"
+
+        with open(
+            os.path.join(host_apps, "GentooHelperInstaller.desktop"), "w"
+        ) as f:
+            f.write(installer)
+
+        subprocess.run(
+            ["gtk-update-icon-cache", "-f", "/usr/share/icons/hicolor"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
 
     def _run_in_terminal(self, cmd_args, cwd=None, callback=None):
         # Launch the given command list in the selected terminal emulator.
@@ -993,7 +1096,7 @@ class SetupWizardWindow(Gtk.Window):
             self.step_box.pack_start(self.prog, False, False, 10)
             self.step_box.show_all()
 
-        self.prog.set_show_text(False)             # bez napisu
+        self.prog.set_show_text(True)             # bez napisu
         self.prog.set_fraction(0)
 
         def pulse():
@@ -1109,9 +1212,28 @@ class SetupWizardWindow(Gtk.Window):
 
 
     def _finish_stage3(self):
-        # bind system dirs and proceed to root password step
+        # bind system dirs
         self._bind_system_dirs()
-        self._build_step_root_passwd()
+        # uruchamiamy kopiowanie asynchronicznie
+        import threading
+        threading.Thread(target=self._install_and_proceed, daemon=True).start()
+
+    def _install_and_proceed(self):
+        # 1) kopiujemy pliki do chroota
+        try:
+            self._install_app_in_chroot()
+        except Exception as e:
+            # w razie błędu – pokazujemy dialog w głównym wątku GTK
+            from gi.repository import GLib
+            GLib.idle_add(self._error_dialog, f"Błąd kopiowania plików:\n{e}")
+            return
+
+        # 2) dodajemy hostowe desktop‐entry (Installer)
+        from gi.repository import GLib
+        GLib.idle_add(self._install_host_desktop_entry)
+
+        # 3) w końcu przechodzimy do kroku ustawiania hasła root
+        GLib.idle_add(self._build_step_root_passwd)
 
     def _after_root_passwd(self, _pid, _status):
         """
@@ -1214,7 +1336,6 @@ class SetupWizardWindow(Gtk.Window):
             ["chroot", "/mnt/gentoo", "/bin/bash"]
         )
 
-
     def _run_pkg_helper(self, _btn=None):
         # Ensure root partition is mounted at /mnt/gentoo
         self._ensure_mounted(self.root_part, "/mnt/gentoo")
@@ -1225,12 +1346,6 @@ class SetupWizardWindow(Gtk.Window):
 
         # Bind system directories and copy DNS
         self._bind_system_dirs()
-
-        # --- skopiuj pliki Gentoo Helpera do /gento_helper -------------
-        try:
-            self._copy_helper_tree("/mnt/gentoo")
-        except Exception as e:
-            return self._error_dialog(f"Błąd kopiowania plików:\n{e}")
 
         # Determine if this is the first run (sync + eix + python)
         sync_flag = Path("/mnt/gentoo/system.txt")
@@ -1271,11 +1386,11 @@ class SetupWizardWindow(Gtk.Window):
 
             inner = (
                 "emerge --sync && "
-                "emerge dev-lang/python app-portage/eix && "
-                "python3 /gento_helper/prog/main.py"
+                "emerge -n dev-lang/python app-portage/eix && "
+                "python3 /opt/gento_helper/prog/main.py"
             )
         else:
-            inner = "python3 /gento_helper/prog/main.py"
+            inner = "python3 /opt/gento_helper/prog/main.py"
 
         try:
             subprocess.run(["xhost", "+SI:localuser:root"], check=True)
@@ -1655,7 +1770,7 @@ class SetupWizardWindow(Gtk.Window):
         def _auto_emerge(pkgs: str) -> str:
             return (
                 f"emerge --autounmask-write --autounmask-backtrack=y {pkgs} || "
-                f"(yes | etc-update --automode -3 && emerge {pkgs})"
+                f"(yes | etc-update --automode -3 && emerge -n {pkgs})"
             )
 
         steps = [
@@ -1719,7 +1834,7 @@ GENTOO_MIRRORS="http://ftp.vectranet.pl/gentoo/ https://mirror.init7.net/gentoo/
 EOF"""
 ),
             (i18n.MESSAGES["step_extra_cflags"], f'export EXTRA_CFLAGS="-march={self.NASZMARCH} -mtune={self.NASZMTUNE} -O3 -pipe -flto" && export EXTRA_CXXFLAGS="-march={self.NASZMARCH} -mtune={self.NASZMTUNE} -O3 -pipe -flto"'),
-            (i18n.MESSAGES["step_install_kernel"], 'emerge sys-kernel/gentoo-sources sys-kernel/genkernel'),
+            (i18n.MESSAGES["step_install_kernel"], 'emerge -n sys-kernel/gentoo-sources sys-kernel/genkernel'),
             (i18n.MESSAGES["step_microcode"],
  f"""cat <<'EOF' >>/etc/genkernel.conf
 MICROCODE="intel"
@@ -1728,9 +1843,9 @@ MAKEOPTS="$(portageq envvar MAKEOPTS)"
 EOF"""
 ),
             (i18n.MESSAGES["step_link_linux"], 'ln -sf /usr/src/linux-* /usr/src/linux'),
-            (i18n.MESSAGES["step_genkernel"], 'genkernel all'),
+            (i18n.MESSAGES["step_genkernel"], 'genkernel all --no-clean --no-mrproper'),
             (i18n.MESSAGES["step_env_update"], 'env-update && source /etc/profile'),
-            (i18n.MESSAGES["step_repo"], 'emerge app-eselect/eselect-repository'),
+            (i18n.MESSAGES["step_repo"], 'emerge -n app-eselect/eselect-repository'),
             (i18n.MESSAGES["step_eselect"], 'eselect repository enable guru steam-overlay'),
             (i18n.MESSAGES["step_sync_overlays"], 'emerge --sync'),
             (i18n.MESSAGES["step_update_world2"], 'env-update && source /etc/profile && emerge --update --deep --newuse @world'),
@@ -1779,8 +1894,6 @@ EOF"""
             (i18n.MESSAGES["step_dbus"], 'rc-update add dbus default'),
             (i18n.MESSAGES["step_networkmanager"], 'rc-update add NetworkManager default'),
             (i18n.MESSAGES["step_autologin"], f'sed -i "s|^c1:.*agetty.*|c1:12345:respawn:/sbin/agetty --noclear -a {self.NASZUSER} 38400 tty1 linux|" /etc/inittab'),
-            ( "Install Gentoo Helper",
-              "bash /gento_helper/install.sh" ),
 
 ]
 # --- GRUB installation step -------------------------------------------------
