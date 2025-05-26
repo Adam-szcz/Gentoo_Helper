@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import gi, subprocess, threading, multiprocessing, re
+import gi, subprocess, threading, multiprocessing, re, shutil, os
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 import os
@@ -242,14 +242,31 @@ class Installer:
 
         def on_finish():
             progress.set_fraction(1.0)
-            success=Gtk.MessageDialog(parent=self.parent,modal=True,
-                message_type=Gtk.MessageType.INFO,text="Operacja zakończona pomyślnie.")
-            success.add_button(Gtk.STOCK_OK,Gtk.ResponseType.OK)
-            if success.run()==Gtk.ResponseType.OK:
-                success.destroy(); dlg.destroy(); GLib.idle_add(self.parent.populate_package_list)
+
+            # jeżeli właśnie doinstalowaliśmy eix – zbuduj bazę
+            if shutil.which("eix"):
+                cmd = ["eix-update"]
+                if os.geteuid() != 0:          # na hoście trzeba sudo
+                    cmd.insert(0, "sudo")
+                subprocess.run(cmd, check=False)
+
+            dlg_ok = Gtk.MessageDialog(
+                parent=self.parent,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                text="Operacja zakończona pomyślnie."
+            )
+            dlg_ok.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
+
+            if dlg_ok.run() == Gtk.ResponseType.OK:
+                dlg_ok.destroy()
+                dlg.destroy()
+                GLib.idle_add(self.parent.populate_package_list)
+
+            # jeśli czeka kolejna tura pakietów
             if self._next_pkgs:
-               self.install_packages_with_args(self._next_pkgs, [])
-            return False
+                self.install_packages_with_args(self._next_pkgs, [])
+
 
         def on_error(msg):
             # zbierz cały output emerge

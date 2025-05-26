@@ -122,9 +122,11 @@ class GentooHelperApp(Gtk.Window):
         try:
             out_all = subprocess.check_output([
                 "eix", "--format", "<category>/<name>:<bestversion:NAMEVERSION>\n"
+                "*"
             ], text=True, stderr=subprocess.DEVNULL)
             out_inst = subprocess.check_output([
                 "eix", "-I", "--format", "<category>/<name>:<installedversions:NAMEVERSION>\n"
+                "*"
             ], text=True, stderr=subprocess.DEVNULL)
         except subprocess.CalledProcessError as e:
             return self.show_error(f"Błąd pobierania wersji: {e}")
@@ -142,7 +144,9 @@ class GentooHelperApp(Gtk.Window):
 
     def ask_install_eix(self):
         dlg = Gtk.MessageDialog(
-            parent=self, modal=True, destroy_with_parent=True,
+            parent=self,
+            modal=True,
+            destroy_with_parent=True,
             message_type=Gtk.MessageType.WARNING,
             text="To GUI wymaga eix. Zainstalować?"
         )
@@ -150,15 +154,14 @@ class GentooHelperApp(Gtk.Window):
         dlg.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
 
         if dlg.run() == Gtk.ResponseType.OK:
-            subprocess.run(["emerge", "app-portage/eix"], check=False)
-            if os.path.exists("/usr/bin/eix-update"):
-                subprocess.run(["/usr/bin/eix-update"], check=False)
-            else:
-                print("Brak pliku /usr/bin/eix-update – instalacja eix mogła się nie powieść.")
             dlg.destroy()
-            self.populate_package_list()
+            # Installer pokaże pasek postępu, poprosi o hasło (jeśli trzeba),
+            # uruchomi emerge, a po sukcesie sam zrobi eix-update
+            # i odświeży listę pakietów.
+            self.installer.install_packages(["app-portage/eix"])
         else:
             dlg.destroy()
+
 
 
 
