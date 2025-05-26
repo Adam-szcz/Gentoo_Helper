@@ -11,6 +11,7 @@ import atexit
 import shutil
 import threading
 import subprocess
+import shlex
 import multiprocessing
 from pathlib import Path
 from datetime import datetime
@@ -401,22 +402,37 @@ class SetupWizardWindow(Gtk.Window):
         )
 
     def _run_in_terminal(self, cmd_args, cwd=None, callback=None):
-        # Launch the given command list in the selected terminal emulator.
-        # If callback is provided, register it to be called when the process exits.
+        import shlex
         term = self._pick_terminal()
         if not term:
             return self._error_dialog(i18n.MESSAGES["err_no_terminal"])
 
-        # gnome-terminal uses “--”, others use “-e”
+        # gnome-terminal używa “--”
         if term == "gnome-terminal":
             full_cmd = [term, "--"] + cmd_args
-        else:
-            full_cmd = [term, "-e"] + cmd_args
 
+        # qterminal: brak opcji hold → zrób “bash -c '<cmd>; read'”
+        elif term == "qterminal":
+            one = shlex.join(cmd_args)
+            hold = f"{one}; echo; read -p 'Naciśnij Enter, aby zamknąć…'"
+            full_cmd = [term, "-e", "bash", "-c", hold]
+
+        # xterm ma własne -hold
+        elif term == "xterm":
+            one = shlex.join(cmd_args)
+            full_cmd = [term, "-hold", "-e", one]
+
+        # pozostałe terminale (lxterminal, konsole, alacritty, kitty…)
+        else:
+            one = shlex.join(cmd_args)
+            full_cmd = [term, "-e", one]
+
+        # uruchom i ewentualnie zarejestruj callback
         proc = subprocess.Popen(full_cmd, cwd=cwd)
         if callback:
             GLib.child_watch_add(GLib.PRIORITY_DEFAULT, proc.pid, callback)
         return proc
+
 
 
     def _ensure_mounted(self, src: str, dst: str, *, fs_type: str = None,
@@ -501,15 +517,15 @@ class SetupWizardWindow(Gtk.Window):
                 pass
 
 
-    # ── posprzątaj paczkę gento_helper i zamknij kreator ──
+    # ── posprzątaj paczkę Gento_Helper i zamknij kreator ──
     def _cleanup_and_quit(self, _btn=None):
         import shutil, os
         try:
-            shutil.rmtree("/mnt/gentoo/gento_helper")
+            shutil.rmtree("/mnt/gentoo/Gento_Helper")
         except FileNotFoundError:
             pass                  
         except Exception as e:
-            print(f"[warn] nie mogę skasować /mnt/gentoo/gento_helper: {e}")
+            print(f"[warn] nie mogę skasować /mnt/gentoo/Gento_Helper: {e}")
         self._quit_with_parent()   
 
 
@@ -1387,10 +1403,10 @@ class SetupWizardWindow(Gtk.Window):
             inner = (
                 "emerge --sync && "
                 "emerge -n dev-lang/python app-portage/eix && "
-                "python3 /opt/gento_helper/prog/main.py"
+                "python3 /opt/Gento_Helper/prog/main.py"
             )
         else:
-            inner = "python3 /opt/gento_helper/prog/main.py"
+            inner = "python3 /opt/Gento_Helper/prog/main.py"
 
         try:
             subprocess.run(["xhost", "+SI:localuser:root"], check=True)
@@ -1398,10 +1414,22 @@ class SetupWizardWindow(Gtk.Window):
             print("[warn] Nie udało się wykonać xhost:", e)
 
         # ── odpal w chroocie z przygotowanym ENV ────────────────────────
-        self._run_in_terminal([
+        # ── zbuduj polecenie do chroota ──────────────────────────────
+        chroot_cmd = [
             "chroot", "/mnt/gentoo", "bash", "-lc",
-            f"export DISPLAY='{env['DISPLAY']}' XDG_RUNTIME_DIR='{env['XDG_RUNTIME_DIR']}'; {inner}"
-       ])
+            (
+                f"export DISPLAY='{env['DISPLAY']}' "
+                f"XDG_RUNTIME_DIR='{env['XDG_RUNTIME_DIR']}'; "
+                f"{inner}"
+            )
+        ]
+        # jeśli kreator uruchomiony jako zwykły user → dołóż sudo -E
+        if os.geteuid() != 0:
+            chroot_cmd = ["sudo", "-E"] + chroot_cmd
+
+        # ── uruchom w terminalu ──────────────────────────────────────
+        self._run_in_terminal(chroot_cmd)
+
 
 
 
