@@ -96,7 +96,7 @@ MESSAGES = {
     "step_repo": _("Instalacja eselect-repository"),
     "step_eselect": _("Dodanie overlayów przez eselect"),
     "step_sync_overlays": _("Synchronizacja overlayów"),
-    "step_update_world2": _("Aktualizacja systemu"),
+    "step_update_world2": _("Aktualizacja systemu (ponownie)"),
     "step_install_programs": _("Instalacja programów"),
     "step_useradd": _("Dodanie użytkownika"),
     "step_autostart_x": _("Automatyczny start X"),

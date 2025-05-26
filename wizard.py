@@ -11,7 +11,6 @@ import atexit
 import shutil
 import threading
 import subprocess
-import shlex
 import multiprocessing
 from pathlib import Path
 from datetime import datetime
@@ -141,11 +140,15 @@ class SetupWizardWindow(Gtk.Window):
         }
 
         super().__init__(title=i18n.MESSAGES["app_title"])
-        # kolejno wymagane narzędzia
-        for bin_, pkg in (("gparted", "sys-block/gparted"),
-                          ("links",   "www-client/links")):
-            if not self._ensure_tool(bin_, pkg):
-                return          # poczekaj, aż instalacja się skończy albo użytkownik zrezygnuje
+        if not shutil.which("gparted"):
+            if self._offer_install("sys-block/gparted"):
+                sys.exit(0)
+            sys.exit(0)  # zamiast return
+
+        if not shutil.which("links"):
+            if self._offer_install("www-client/links"):
+                sys.exit(0)
+            sys.exit(0)
         # ---- ADD CSS FOR TRANSPARENT BACKGROUND ----
         style_provider = Gtk.CssProvider()
         style_provider.load_from_data(b"""
@@ -232,42 +235,6 @@ class SetupWizardWindow(Gtk.Window):
         self._build_welcome()
         self.show_all()
     # ------------------------------------------------------------------
-    def _ensure_tool(self, binary: str, ebuild: str) -> bool:
-        """Sprawdź binarkę; w razie potrzeby zapytaj o instalację
-           i uruchom ją w terminalu.  Zwraca True, gdy program GOTOWY."""
-        if shutil.which(binary):
-            return True                      # już zainstalowany
-
-        # pytanie do użytkownika
-        dlg = Gtk.MessageDialog(
-            parent=self, flags=0,
-            message_type=Gtk.MessageType.WARNING,
-            buttons=Gtk.ButtonsType.OK_CANCEL,
-            text=f"Nie znaleziono programu {binary}.",
-            secondary_text=f"Czy chcesz zainstalować {ebuild}?"
-        )
-        ok = dlg.run() == Gtk.ResponseType.OK
-        dlg.destroy()
-        if not ok:
-            return False                     # użytkownik anulował
-
-        # schowaj kreator na czas instalacji, żeby nie był „zamrożony”
-        self.hide()
-
-        # callback po zakończeniu emerge
-        def _after_install(_pid, _status):
-            if shutil.which(binary):
-                # sukces → restartujemy cały program
-                os.execv(sys.executable, [sys.executable] + sys.argv)
-            else:
-                # porażka → pokaż błąd i wróć
-                self.show()
-                self._error_dialog(f"Instalacja {binary} nie powiodła się.")
-
-        # emerge w terminalu; okno terminala zniknie samo gdy polecenie dobiegnie końca
-        self._run_in_terminal(["sudo", "emerge", ebuild], callback=_after_install)
-        return False                         # wstrzymujemy dalsze akcje
-    # ------------------------------------------------------------------
     def _offer_install(self, pkg_name: str) -> bool:
         """Wyświetla dialog z propozycją instalacji i zwraca True, jeśli OK."""
         dialog = Gtk.MessageDialog(
@@ -301,138 +268,52 @@ class SetupWizardWindow(Gtk.Window):
             return True
         return False
 
-    def _install_app_in_chroot(self):
-        import os, shutil, subprocess
+    def _copy_helper_tree(self, dest_root: str):
+        """
+        Kopiuje Gentoo Helpera do <dest_root>/gento_helper
+        – pomija katalogi __pycache__ i pliki *.pyc.
+        """
+        from pathlib import Path, PurePosixPath
+        import shutil, os, fnmatch
 
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        dest = "/mnt/gentoo/opt/Gento_Helper"
-        os.makedirs(dest, exist_ok=True)
+        src_root = Path(__file__).resolve().parent          # katalog z wizard.py
+        dest_dir = Path(dest_root) / "gento_helper"
 
-        # 1) Kopiuj katalogi
-        for sub in ("assets", "languages", "prog"):
-            shutil.copytree(
-                os.path.join(project_root, sub),
-                os.path.join(dest, sub),
-                dirs_exist_ok=True
-            )
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
 
-        # 2) Kopiuj pliki
-        for fn in (
-            "com.gento.helper.policy",
-            "GentooHelper.desktop",
-            "README.md", "disk_utils.py",
-            "main.py", "wizard.py",
-        ):
-            shutil.copy(
-                os.path.join(project_root, fn),
-                dest
-            )
+        def _ignore(path, names):
+            ignored = []
+            for n in names:
+                if n == "__pycache__" or fnmatch.fnmatch(n, "*.pyc"):
+                    ignored.append(n)
+            return set(ignored)
 
-        # 3) PolicyKit i główny .desktop w chroot
-        pk_dst  = "/mnt/gentoo/usr/share/polkit-1/actions"
-        app_dst = "/mnt/gentoo/usr/share/applications"
-        os.makedirs(pk_dst, exist_ok=True)
-        os.makedirs(app_dst, exist_ok=True)
-        shutil.copy(
-            os.path.join(project_root, "com.gento.helper.policy"),
-            pk_dst
-        )
-        shutil.copy(
-            os.path.join(project_root, "GentooHelper.desktop"),
-            app_dst
-        )
+        shutil.copytree(src_root, dest_dir, ignore=_ignore)
 
-        # 4) Utwórz też GentooHelperInstaller.desktop w chroot
-        installer = "\n".join([
-            "[Desktop Entry]",
-            "Type=Application",
-            "Name=Gento Helper Installer",
-            "Comment=Gentoo Helper – zarządzaj pakietami po instalacji",
-            "Exec=python3 /opt/Gento_Helper/prog/main.py",
-            "Icon=gento-helper",
-            "Terminal=false",
-            "Categories=System;"
-        ]) + "\n"
-        with open(os.path.join(app_dst, "GentooHelperInstaller.desktop"), "w") as f:
-            f.write(installer)
-
-        # 5) Ikona i cache ikon w chroot
-        ico_src = os.path.join(project_root, "assets", "splashicon.png")
-        ico_dst = "/mnt/gentoo/usr/share/pixmaps/gento-helper.png"
-        os.makedirs(os.path.dirname(ico_dst), exist_ok=True)
-        shutil.copy(ico_src, ico_dst)
-        subprocess.run(
-            ["chroot", "/mnt/gentoo",
-             "gtk-update-icon-cache", "-f", "/usr/share/icons/hicolor"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-
-
-    def _install_host_desktop_entry(self):
-        import os, shutil, subprocess
-
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        host_apps = "/usr/share/applications"
-        os.makedirs(host_apps, exist_ok=True)
-
-        shutil.copy(
-            os.path.join(project_root, "GentooHelper.desktop"),
-            host_apps
-        )
-
-        installer = "\n".join([
-            "[Desktop Entry]",
-            "Type=Application",
-            "Name=Gento Helper Installer",
-            "Comment=Gentoo Helper – zarządzaj pakietami po instalacji",
-            "Exec=python3 /opt/Gento_Helper/prog/main.py",
-            "Icon=gento-helper",
-            "Terminal=false",
-            "Categories=System;"
-        ]) + "\n"
-
-        with open(
-            os.path.join(host_apps, "GentooHelperInstaller.desktop"), "w"
-        ) as f:
-            f.write(installer)
-
-        subprocess.run(
-            ["gtk-update-icon-cache", "-f", "/usr/share/icons/hicolor"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        # pliki, których naprawdę nie chcemy przenosić (opcjonalnie)
+        for extra in ("gento_helper.tar.gz",):
+            p = dest_dir / PurePosixPath(extra)
+            if p.exists():
+                p.unlink()
 
     def _run_in_terminal(self, cmd_args, cwd=None, callback=None):
-        import shlex
+        # Launch the given command list in the selected terminal emulator.
+        # If callback is provided, register it to be called when the process exits.
         term = self._pick_terminal()
         if not term:
             return self._error_dialog(i18n.MESSAGES["err_no_terminal"])
 
-        # gnome-terminal używa “--”
+        # gnome-terminal uses “--”, others use “-e”
         if term == "gnome-terminal":
             full_cmd = [term, "--"] + cmd_args
-
-        # qterminal: brak opcji hold → zrób “bash -c '<cmd>; read'”
-        elif term == "qterminal":
-            one = shlex.join(cmd_args)
-            hold = f"{one}; echo; read -p 'Naciśnij Enter, aby zamknąć…'"
-            full_cmd = [term, "-e", "bash", "-c", hold]
-
-        # xterm ma własne -hold
-        elif term == "xterm":
-            one = shlex.join(cmd_args)
-            full_cmd = [term, "-hold", "-e", one]
-
-        # pozostałe terminale (lxterminal, konsole, alacritty, kitty…)
         else:
-            one = shlex.join(cmd_args)
-            full_cmd = [term, "-e", one]
+            full_cmd = [term, "-e"] + cmd_args
 
-        # uruchom i ewentualnie zarejestruj callback
         proc = subprocess.Popen(full_cmd, cwd=cwd)
         if callback:
             GLib.child_watch_add(GLib.PRIORITY_DEFAULT, proc.pid, callback)
         return proc
-
 
 
     def _ensure_mounted(self, src: str, dst: str, *, fs_type: str = None,
@@ -517,15 +398,15 @@ class SetupWizardWindow(Gtk.Window):
                 pass
 
 
-    # ── posprzątaj paczkę Gento_Helper i zamknij kreator ──
+    # ── posprzątaj paczkę gento_helper i zamknij kreator ──
     def _cleanup_and_quit(self, _btn=None):
         import shutil, os
         try:
-            shutil.rmtree("/mnt/gentoo/Gento_Helper")
+            shutil.rmtree("/mnt/gentoo/gento_helper")
         except FileNotFoundError:
             pass                  
         except Exception as e:
-            print(f"[warn] nie mogę skasować /mnt/gentoo/Gento_Helper: {e}")
+            print(f"[warn] nie mogę skasować /mnt/gentoo/gento_helper: {e}")
         self._quit_with_parent()   
 
 
@@ -1112,7 +993,7 @@ class SetupWizardWindow(Gtk.Window):
             self.step_box.pack_start(self.prog, False, False, 10)
             self.step_box.show_all()
 
-        self.prog.set_show_text(True)             # bez napisu
+        self.prog.set_show_text(False)             # bez napisu
         self.prog.set_fraction(0)
 
         def pulse():
@@ -1228,28 +1109,9 @@ class SetupWizardWindow(Gtk.Window):
 
 
     def _finish_stage3(self):
-        # bind system dirs
+        # bind system dirs and proceed to root password step
         self._bind_system_dirs()
-        # uruchamiamy kopiowanie asynchronicznie
-        import threading
-        threading.Thread(target=self._install_and_proceed, daemon=True).start()
-
-    def _install_and_proceed(self):
-        # 1) kopiujemy pliki do chroota
-        try:
-            self._install_app_in_chroot()
-        except Exception as e:
-            # w razie błędu – pokazujemy dialog w głównym wątku GTK
-            from gi.repository import GLib
-            GLib.idle_add(self._error_dialog, f"Błąd kopiowania plików:\n{e}")
-            return
-
-        # 2) dodajemy hostowe desktop‐entry (Installer)
-        from gi.repository import GLib
-        GLib.idle_add(self._install_host_desktop_entry)
-
-        # 3) w końcu przechodzimy do kroku ustawiania hasła root
-        GLib.idle_add(self._build_step_root_passwd)
+        self._build_step_root_passwd()
 
     def _after_root_passwd(self, _pid, _status):
         """
@@ -1352,6 +1214,7 @@ class SetupWizardWindow(Gtk.Window):
             ["chroot", "/mnt/gentoo", "/bin/bash"]
         )
 
+
     def _run_pkg_helper(self, _btn=None):
         # Ensure root partition is mounted at /mnt/gentoo
         self._ensure_mounted(self.root_part, "/mnt/gentoo")
@@ -1362,6 +1225,12 @@ class SetupWizardWindow(Gtk.Window):
 
         # Bind system directories and copy DNS
         self._bind_system_dirs()
+
+        # --- skopiuj pliki Gentoo Helpera do /gento_helper -------------
+        try:
+            self._copy_helper_tree("/mnt/gentoo")
+        except Exception as e:
+            return self._error_dialog(f"Błąd kopiowania plików:\n{e}")
 
         # Determine if this is the first run (sync + eix + python)
         sync_flag = Path("/mnt/gentoo/system.txt")
@@ -1402,11 +1271,11 @@ class SetupWizardWindow(Gtk.Window):
 
             inner = (
                 "emerge --sync && "
-                "emerge -n dev-lang/python app-portage/eix && "
-                "python3 /opt/Gento_Helper/prog/main.py"
+                "emerge dev-lang/python app-portage/eix && "
+                "python3 /gento_helper/prog/main.py"
             )
         else:
-            inner = "python3 /opt/Gento_Helper/prog/main.py"
+            inner = "python3 /gento_helper/prog/main.py"
 
         try:
             subprocess.run(["xhost", "+SI:localuser:root"], check=True)
@@ -1414,22 +1283,10 @@ class SetupWizardWindow(Gtk.Window):
             print("[warn] Nie udało się wykonać xhost:", e)
 
         # ── odpal w chroocie z przygotowanym ENV ────────────────────────
-        # ── zbuduj polecenie do chroota ──────────────────────────────
-        chroot_cmd = [
+        self._run_in_terminal([
             "chroot", "/mnt/gentoo", "bash", "-lc",
-            (
-                f"export DISPLAY='{env['DISPLAY']}' "
-                f"XDG_RUNTIME_DIR='{env['XDG_RUNTIME_DIR']}'; "
-                f"{inner}"
-            )
-        ]
-        # jeśli kreator uruchomiony jako zwykły user → dołóż sudo -E
-        if os.geteuid() != 0:
-            chroot_cmd = ["sudo", "-E"] + chroot_cmd
-
-        # ── uruchom w terminalu ──────────────────────────────────────
-        self._run_in_terminal(chroot_cmd)
-
+            f"export DISPLAY='{env['DISPLAY']}' XDG_RUNTIME_DIR='{env['XDG_RUNTIME_DIR']}'; {inner}"
+       ])
 
 
 
@@ -1798,7 +1655,7 @@ class SetupWizardWindow(Gtk.Window):
         def _auto_emerge(pkgs: str) -> str:
             return (
                 f"emerge --autounmask-write --autounmask-backtrack=y {pkgs} || "
-                f"(yes | etc-update --automode -3 && emerge -n {pkgs})"
+                f"(yes | etc-update --automode -3 && emerge {pkgs})"
             )
 
         steps = [
@@ -1862,7 +1719,7 @@ GENTOO_MIRRORS="http://ftp.vectranet.pl/gentoo/ https://mirror.init7.net/gentoo/
 EOF"""
 ),
             (i18n.MESSAGES["step_extra_cflags"], f'export EXTRA_CFLAGS="-march={self.NASZMARCH} -mtune={self.NASZMTUNE} -O3 -pipe -flto" && export EXTRA_CXXFLAGS="-march={self.NASZMARCH} -mtune={self.NASZMTUNE} -O3 -pipe -flto"'),
-            (i18n.MESSAGES["step_install_kernel"], 'emerge -n sys-kernel/gentoo-sources sys-kernel/genkernel'),
+            (i18n.MESSAGES["step_install_kernel"], 'emerge sys-kernel/gentoo-sources sys-kernel/genkernel'),
             (i18n.MESSAGES["step_microcode"],
  f"""cat <<'EOF' >>/etc/genkernel.conf
 MICROCODE="intel"
@@ -1871,9 +1728,9 @@ MAKEOPTS="$(portageq envvar MAKEOPTS)"
 EOF"""
 ),
             (i18n.MESSAGES["step_link_linux"], 'ln -sf /usr/src/linux-* /usr/src/linux'),
-            (i18n.MESSAGES["step_genkernel"], 'genkernel all --no-clean --no-mrproper'),
+            (i18n.MESSAGES["step_genkernel"], 'genkernel all'),
             (i18n.MESSAGES["step_env_update"], 'env-update && source /etc/profile'),
-            (i18n.MESSAGES["step_repo"], 'emerge -n app-eselect/eselect-repository'),
+            (i18n.MESSAGES["step_repo"], 'emerge app-eselect/eselect-repository'),
             (i18n.MESSAGES["step_eselect"], 'eselect repository enable guru steam-overlay'),
             (i18n.MESSAGES["step_sync_overlays"], 'emerge --sync'),
             (i18n.MESSAGES["step_update_world2"], 'env-update && source /etc/profile && emerge --update --deep --newuse @world'),
@@ -1922,6 +1779,8 @@ EOF"""
             (i18n.MESSAGES["step_dbus"], 'rc-update add dbus default'),
             (i18n.MESSAGES["step_networkmanager"], 'rc-update add NetworkManager default'),
             (i18n.MESSAGES["step_autologin"], f'sed -i "s|^c1:.*agetty.*|c1:12345:respawn:/sbin/agetty --noclear -a {self.NASZUSER} 38400 tty1 linux|" /etc/inittab'),
+            ( "Install Gentoo Helper",
+              "bash /gento_helper/install.sh" ),
 
 ]
 # --- GRUB installation step -------------------------------------------------
@@ -1955,52 +1814,111 @@ EOF"""
             GLib.idle_add(self.substep_bar.hide)
             GLib.idle_add(self.emerge_output_label.set_text, "")
 
-            # ── obsługa emerge ─────────────────────────────────────────────────
             if 'emerge' in cmd:
                 seen_progress = False
                 last_i = last_tot = last_pkg = None
                 master_fd, slave_fd = pty.openpty()
                 proc = subprocess.Popen(
-                    full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0
+                    full_cmd,
+                    stdout=slave_fd, stderr=slave_fd,
+                    bufsize=0, text=True
                 )
                 os.close(slave_fd)
 
-                with os.fdopen(master_fd, "rb") as stdout_b:
+                with os.fdopen(master_fd) as stdout:
+                    seen_progress = False
+                    last_i = last_tot = last_pkg = None
                     while True:
                         try:
-                            raw = stdout_b.readline()
-                            if not raw:
+                            line = stdout.readline()
+                            if not line:
                                 break
                         except OSError:
                             break
 
-                        # 1) surowe wyjście emerge do terminala
                         if label in external:
-                            line_out = raw.decode("utf-8", errors="replace")
-                            sys.stdout.write(line_out)
+                            sys.stdout.write(line)
                             sys.stdout.flush()
 
-                        # 2) usuwamy ANSI i tworzymy „clean”
-                        line = raw.decode("utf-8", errors="replace")
                         clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
 
-                        # 3) dalsze przetwarzanie m2, m1, m_pct, phase_patterns…
-                        #    (tu wstaw swój istniejący kod z regexami, progress_bar i emerge_output_label)
+                        if self.verbose_gui:
+                            GLib.idle_add(self.append_log, clean.rstrip('\n'))
+                
+                        # Jednoznacznie wykrywaj ">>> Emerging"
+                        if '>>> Emerging' in clean:
+                            seen_progress = True
+                            GLib.idle_add(self.progress_bar.set_fraction, 0.0)
+                            GLib.idle_add(self.progress_bar.set_text, "0 %")
+                            GLib.idle_add(self.progress_bar.show)
+
+                        m2 = re.search(r'>>> (?:Emerging|Installing) \(\s*(\d+)\s+of\s+(\d+)\s*\)\s+([^\s]+)', clean)
+                        m1 = re.search(r'\[\s*(\d+)\s*(?:\/|of)\s*(\d+)\s*\]\s+(.+)', clean)
+                        m_pct = re.search(r'\[\s*(\d{1,3})\s*%\]\s+(.+)', clean)
+
+                        if m2:
+                            cur, tot, full = m2.groups()
+                            pkg = full.split("::")[0]
+                            pkg = re.sub(r"-\d[0-9._-]*$", "", pkg)
+                            last_i, last_tot, last_pkg = cur, tot, pkg
+                            frac = int(cur) / int(tot)
+                            pct = int(frac * 100)
+
+                            GLib.idle_add(self.progress_bar.set_fraction, frac)
+                            GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
+                            GLib.idle_add(self.progress_bar.show)
+
+                            GLib.idle_add(
+                                self.emerge_output_label.set_text,
+                                f"[{cur}/{tot}] {pkg}"
+                            )
+
+                        phase_patterns = [
+                            (r">>> Unpacking", "Unpacking..."),
+                            (r">>> Installing", "Installing..."),
+                            (r">>> Completed", "Completed!"),
+                            (r">>> Emerging", "Emerging..."),
+                            (r"Copying", "Copying..."),
+                            (r"checking", "Checking..."),
+                        ]
+
+                        for pat, txt in phase_patterns:
+                            if re.search(pat, clean):
+                                if last_i and last_tot and last_pkg:
+                                    GLib.idle_add(
+                                        self.emerge_output_label.set_text,
+                                        f"[{last_i}/{last_tot}] {last_pkg}  {txt}"
+                                    )
+                
+                        if m1 or m_pct:
+                            GLib.idle_add(self.substep_bar.show)
+                            if m1:
+                                sub, subtot, _ = m1.groups()
+                                GLib.idle_add(self.substep_bar.set_fraction, int(sub) / int(subtot))
+                            else:
+                                pct, _ = m_pct.groups()
+                                GLib.idle_add(self.substep_bar.set_fraction, int(pct) / 100)
+
+                        if ">>> Completed" in clean:
+                            GLib.idle_add(self.substep_bar.hide)
+
+        # Usuń pulsowanie, żeby sprawdzić poprawność wyświetlania
+        # if not seen_progress and not (m2 or m1 or m_pct):
+        #     GLib.idle_add(self.progress_bar.pulse)
+
 
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.substep_bar.hide)
                 GLib.idle_add(self.emerge_output_label.set_text, "")
 
-            # ── obsługa genkernel ────────────────────────────────────────────────
             elif 'genkernel' in cmd:
                 genkernel_steps = [
                     "kernel: >> Initializing",
                     "Running 'make mrproper'",
                     "Running 'make oldconfig'",
                     "We are now building Linux kernel",
-                    "Compiling bzImage",
-                    "Compiling modules",
+                    "Compiling",
                     "Installing",
                     "Generating module dependency data",
                     "Compiling out-of-tree module",
@@ -2015,39 +1933,23 @@ EOF"""
                 ]
                 total_genkernel_steps = len(genkernel_steps)
                 master_fd, slave_fd = pty.openpty()
-                proc = subprocess.Popen(
-                    full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0
-                )
+                proc = subprocess.Popen(full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0, text=True)
                 os.close(slave_fd)
 
-                patterns = {
-                    "Compiling bzImage":   r"Compiling\s+.*\s+bzImage",
-                    "Compiling modules":   r"Compiling\s+.*\s+modules?"
-                }
-
-                with os.fdopen(master_fd, "rb") as stdout_b:
+                with os.fdopen(master_fd) as stdout:
                     while True:
                         try:
-                            raw = stdout_b.readline()
-                            if not raw:
+                            line = stdout.readline()
+                            if not line:
                                 break
                         except OSError:
                             break
-
-                        # 1) surowe wyjście genkernel do terminala
                         if label in external:
-                            line_out = raw.decode("utf-8", errors="replace")
-                            sys.stdout.write(line_out)
+                            sys.stdout.write(line)
                             sys.stdout.flush()
-
-                        # 2) usuwamy ANSI i dekodujemy do clean
-                        clean_bytes = re.sub(rb'\x1B\[[0-?]*[ -/]*[@-~]', b'', raw)
-                        clean = clean_bytes.decode("utf-8", errors="replace")
-
-                        # 3) regexowe dopasowanie kroków
+                        clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
                         for idx2, step in enumerate(genkernel_steps):
-                            pat = patterns.get(step, re.escape(step))
-                            if re.search(pat, clean):
+                            if step in clean:
                                 progress = (idx2 + 1) / total_genkernel_steps
                                 pct = int(progress * 100)
                                 GLib.idle_add(self.progress_bar.set_fraction, progress)
@@ -2058,10 +1960,10 @@ EOF"""
                                     f"[genkernel] {step}"
                                 )
                                 break
-
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.emerge_output_label.set_text, "")
+
             else:
                 proc = subprocess.run(full_cmd, capture_output=True, text=True)
                 if self.verbose_gui:

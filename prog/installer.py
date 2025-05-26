@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import gi, subprocess, threading, multiprocessing, re, shutil, os
+import gi, subprocess, threading, multiprocessing, re
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 import os
@@ -242,31 +242,14 @@ class Installer:
 
         def on_finish():
             progress.set_fraction(1.0)
-
-            # jeżeli właśnie doinstalowaliśmy eix – zbuduj bazę
-            if shutil.which("eix"):
-                cmd = ["eix-update"]
-                if os.geteuid() != 0:          # na hoście trzeba sudo
-                    cmd.insert(0, "sudo")
-                subprocess.run(cmd, check=False)
-
-            dlg_ok = Gtk.MessageDialog(
-                parent=self.parent,
-                modal=True,
-                message_type=Gtk.MessageType.INFO,
-                text="Operacja zakończona pomyślnie."
-            )
-            dlg_ok.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
-
-            if dlg_ok.run() == Gtk.ResponseType.OK:
-                dlg_ok.destroy()
-                dlg.destroy()
-                GLib.idle_add(self.parent.populate_package_list)
-
-            # jeśli czeka kolejna tura pakietów
+            success=Gtk.MessageDialog(parent=self.parent,modal=True,
+                message_type=Gtk.MessageType.INFO,text="Operacja zakończona pomyślnie.")
+            success.add_button(Gtk.STOCK_OK,Gtk.ResponseType.OK)
+            if success.run()==Gtk.ResponseType.OK:
+                success.destroy(); dlg.destroy(); GLib.idle_add(self.parent.populate_package_list)
             if self._next_pkgs:
-                self.install_packages_with_args(self._next_pkgs, [])
-
+               self.install_packages_with_args(self._next_pkgs, [])
+            return False
 
         def on_error(msg):
             # zbierz cały output emerge
@@ -276,21 +259,19 @@ class Installer:
             if ("perhaps you need --autounmask-write" in full
                 or "use changes are necessary to proceed" in full):
                 pkg = pkgs[0]
-                # zrób autounmask z backtrack
-                subprocess.run(
-                    ["emerge", "--autounmask-write", "--autounmask-backtrack=y", pkg],
-                    check=False
-                )
-                subprocess.run("yes | etc-update --automode -3", shell=True, check=False)
+                # zrób autounmask
+                subprocess.run(["emerge", "--autounmask-write", pkg], check=False)
+                subprocess.run("yes | etc-update --automode -3",
+                               shell=True, check=False)
 
                 # zresetuj log i pasek postępu
                 self._last_output.clear()
                 progress.set_fraction(0.0)
                 status_label.set_text(f"Autounmask i ponowna instalacja {pkg}…")
 
-                # kontynuuj w tym samym dialogu, teraz z -n
+                # kontynuuj w tym samym dialogu
                 self.run_with_progress(
-                    ["emerge", "-n"] + extra_args + pkgs,
+                    ["emerge"] + extra_args + pkgs,
                     pwd, on_update, on_finish, on_error
                 )
                 return False
@@ -313,6 +294,7 @@ class Installer:
             ).run()
             GLib.idle_add(self.parent.populate_package_list)
             return False
+
 
         self.run_with_progress(["emerge"]+extra_args+pkgs,pwd,on_update,on_finish,on_error)
         dlg.connect("response",lambda d,r: dlg.destroy() if r==Gtk.ResponseType.CANCEL else None)
