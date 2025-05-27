@@ -38,6 +38,10 @@ def show_duplicate_dialog_and_exit(pid=None):
     dialog.destroy()
     return response == Gtk.ResponseType.YES
 
+def strip_version(pkgname):
+    # Usuwa końcówkę z wersją, np. -2.0.1-r1
+    return re.sub(r"-\d[\w\.\-]*$", "", pkgname)
+
 def get_locked_pid(lock_path):
     try:
         with open(lock_path, "r") as f:
@@ -91,6 +95,43 @@ _lang_short = _loc.split("_", 1)[0]
 _code = _lang_short if _lang_short in _SUPPORTED else "pl"
 set_language(_code)
 print(f"[i18n] ustawiono język: {_code}")
+
+GENKERNEL_GUI_MAP = [
+    # Kernel build steps
+    (r'Initializing', "Initializing ..."),
+    (r"Running 'make mrproper'", "Running 'make mrproper' ..."),
+    (r"Re-running 'make oldconfig'", "Re-running 'make oldconfig' ..."),
+    (r"Running 'make oldconfig'", "Running 'make oldconfig' ..."),
+    (r'Kernel version has changed', "Kernel version has changed ..."),
+    (r'We are now building Linux kernel', "We are now building Linux kernel ..."),
+    (r'Compiling [\d\w\.\-]+ bzImage', "Compiling bzImage ..."),
+    (r'Compiling [\d\w\.\-]+ modules', "Compiling modules ..."),
+    (r'Installing [\d\w\.\-]+ modules', "Installing modules ..."),
+    (r'Generating module dependency data', "Generating module dependency data ..."),
+    (r'Compiling out-of-tree module', "Compiling out-of-tree module(s) ..."),
+    (r'Saving config of successful build', "Saving config of successful build ..."),
+
+    # Initramfs build steps
+    (r'initramfs: >> Initializing', "Initializing ..."),
+    (r'Appending devices cpio data', "Appending devices cpio data ..."),
+    (r'Appending base_layout cpio data', "Appending base_layout cpio data ..."),
+    (r'Appending util-linux cpio data', "Appending util-linux cpio data ..."),
+    (r'Appending eudev cpio data', "Appending eudev cpio data ..."),
+    (r'Appending auxiliary cpio data', "Appending auxiliary cpio data ..."),
+    (r'Appending busybox cpio data', "Appending busybox cpio data ..."),
+    (r'Appending modprobed cpio data', "Appending modprobed cpio data ..."),
+    (r'Appending modules cpio data', "Appending modules cpio data ..."),
+    (r'Deduping cpio', "Deduping cpio ..."),
+    (r'Pre-generating initramfs', "Pre-generating initramfs' /etc/ld.so.cache ..."),
+    (r'Compressing cpio data', "Compressing cpio data (.xz) ..."),
+    (r'Kernel compiled successfully', "Kernel compiled successfully!"),
+]
+
+def map_genkernel_line(line):
+    for pattern, msg in GENKERNEL_GUI_MAP:
+        if re.search(pattern, line):
+            return msg
+    return None
 
 class SetupWizardWindow(Gtk.Window):
     def __init__(self):
@@ -993,7 +1034,7 @@ class SetupWizardWindow(Gtk.Window):
             self.step_box.pack_start(self.prog, False, False, 10)
             self.step_box.show_all()
 
-        self.prog.set_show_text(False)             # bez napisu
+        self.prog.set_show_text(True)             
         self.prog.set_fraction(0)
 
         def pulse():
@@ -1804,9 +1845,11 @@ EOF"""
             i18n.MESSAGES["step_install_grub_uefi"] if self.efi_choice else         i18n.MESSAGES["step_install_grub_bios"]
         }
 
+
+
         total = len(steps)
         for idx, (label, cmd) in enumerate(steps, 1):
-            GLib.idle_add(self.append_log, f"→ {label}")
+            GLib.idle_add(self.append_log, f"→ {strip_version(label)}")
 
             full_cmd = ["chroot", "/mnt/gentoo", "/bin/bash", "-lc", cmd]
 
@@ -1875,11 +1918,12 @@ EOF"""
 
                         phase_patterns = [
                             (r">>> Unpacking", "Unpacking..."),
+                            (r">>> Compiling", "Compiling..."),
                             (r">>> Installing", "Installing..."),
                             (r">>> Completed", "Completed!"),
                             (r">>> Emerging", "Emerging..."),
                             (r"Copying", "Copying..."),
-                            (r"checking", "Checking..."),
+                            
                         ]
 
                         for pat, txt in phase_patterns:
@@ -1913,25 +1957,7 @@ EOF"""
                 GLib.idle_add(self.emerge_output_label.set_text, "")
 
             elif 'genkernel' in cmd:
-                genkernel_steps = [
-                    "kernel: >> Initializing",
-                    "Running 'make mrproper'",
-                    "Running 'make oldconfig'",
-                    "We are now building Linux kernel",
-                    "Compiling",
-                    "Installing",
-                    "Generating module dependency data",
-                    "Compiling out-of-tree module",
-                    "Saving config of successful build",
-                    "initramfs: >> Initializing",
-                    "Appending devices cpio data",
-                    "Appending busybox cpio data",
-                    "Appending modprobed cpio data",
-                    "Deduping cpio data",
-                    "Compressing cpio data",
-                    "Kernel compiled successfully!"
-                ]
-                total_genkernel_steps = len(genkernel_steps)
+
                 master_fd, slave_fd = pty.openpty()
                 proc = subprocess.Popen(full_cmd, stdout=slave_fd, stderr=slave_fd, bufsize=0, text=True)
                 os.close(slave_fd)
@@ -1944,25 +1970,31 @@ EOF"""
                                 break
                         except OSError:
                             break
+
                         if label in external:
                             sys.stdout.write(line)
                             sys.stdout.flush()
+
                         clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', line)
-                        for idx2, step in enumerate(genkernel_steps):
-                            if step in clean:
-                                progress = (idx2 + 1) / total_genkernel_steps
+
+                        pretty = map_genkernel_line(clean)
+                        if pretty:
+                            progress = None
+                            for idx2, (pattern, _) in enumerate(GENKERNEL_GUI_MAP):
+                                if re.search(pattern, clean):
+                                    progress = (idx2 + 1) / len(GENKERNEL_GUI_MAP)
+                                    break
+                            if progress:
                                 pct = int(progress * 100)
                                 GLib.idle_add(self.progress_bar.set_fraction, progress)
                                 GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
                                 GLib.idle_add(self.progress_bar.show)
-                                GLib.idle_add(
-                                    self.emerge_output_label.set_text,
-                                    f"[genkernel] {step}"
-                                )
-                                break
-                proc.wait()
-                GLib.idle_add(self.progress_bar.hide)
-                GLib.idle_add(self.emerge_output_label.set_text, "")
+                            GLib.idle_add(self.emerge_output_label.set_text, pretty)
+
+                    proc.wait()
+                    GLib.idle_add(self.progress_bar.hide)
+                    GLib.idle_add(self.emerge_output_label.set_text, "")
+
 
             else:
                 proc = subprocess.run(full_cmd, capture_output=True, text=True)
