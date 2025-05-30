@@ -73,11 +73,11 @@ The wizard will: choose a disk, open GParted, download Stage 3, chroot, let yo
 6. **Set passwords & users**
 
    * You *must* enter a **root password**.
-   * You *may* create a normal user **\<your\_username>** (see note below).
-7. **Choose a kernel option**
+   * You *may* create a normal user **<your_username>** (see note below).
+7. **Kernel build (current beta)** – the wizard calls `genkernel all` with safe defaults.
 
-   * *Genkernel* – quicker, uses distro defaults.
-   * *Manual* – drops you into `make menuconfig`.
+   *Manual kernel compilation via `make menuconfig` is **not implemented yet** but is planned for a future release.*
+
 8. **Configure extra packages** – desktop environment, GPU drivers, Steam…
 9. **Install boot loader** – GRUB (BIOS/UEFI) or systemd‑boot.
 10. **Finish** – unmount, reboot, and enjoy your fresh Gentoo!
@@ -86,7 +86,7 @@ The wizard will: choose a disk, open GParted, download Stage 3, chroot, let yo
 
 ## Frequently asked questions
 
-### “What is **\<your\_username> / yourname** in the docs?”
+### “What is **<your_username> / yourname** in the docs?”
 
 It is a **placeholder** for the *Linux user account you create inside the new Gentoo system*, *not* your GitHub login.  Replace it everywhere with the actual username you typed in step 6 above.  Example:
 
@@ -104,11 +104,13 @@ Home directory ⇒ `/home/adam`.
 
 ### “Do I have to use genkernel?”
 
-No.  Tick *Manual Kernel* and the wizard will drop you to a shell so you can compile a fully custom kernel.  Genkernel is just the convenient default.
+For the moment, **yes**.  The current beta only supports the Genkernel path.  Manual kernel compilation via `make menuconfig` will be added in a future version—it’s on the roadmap.
 
 ---
 
 ## Contributing & translation
+
+I am still learning Gentoo myself, so **any tips, bug reports or pull requests are welcome and greatly appreciated.**
 
 Pull requests are welcome—bug fixes, UI tweaks, new language files.  Translation templates live under `i18n/`; copy `en.po` to your locale (e.g. `de.po`) and submit a PR.
 
@@ -117,4 +119,3 @@ Pull requests are welcome—bug fixes, UI tweaks, new language files.  Translati
 ## License
 
 Gentoo Helper is released under the **MIT License**.  See [LICENSE](LICENSE) for details.
-
