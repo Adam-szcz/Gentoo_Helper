@@ -1,138 +1,120 @@
-# Gentoo Helper
+# Gentoo Helper
 
-An interactive GTK-based installer GUI for Gentoo Linux.
-Guides you step-by-step through partitioning, Stage3 download & extraction, chroot setup, package manager, and full system installation.
+An interactive **GTK-based installer GUI** that walks you through a full Gentoo Linux installation—disk partitioning, Stage 3 extraction, chroot setup, kernel build, user creation, boot loader, and optional desktop packages.
+
+> **Status**: beta.  Tested on amd64 with both SystemRescue and the official Gentoo Live‑GUI images.
 
 ---
 
-## Features
+## Table of contents
 
-- **Disk Selection & Partitioning**
-  Scan and choose target disk, launch GParted for manual partitioning.
-- **EFI / BIOS Detection**
-  Optionally configure UEFI (`/boot`) or legacy BIOS.
-- **Partition Picker**
-  Select root (`/`) and EFI (`/boot`) partitions from the chosen disk.
-- **Stage3 Download & Extraction**
-  Opens Links browser to fetch a Stage3 archive, then auto-extracts it under `/mnt/gentoo`.
-- **Chroot Entry & Root Password**
-  Bind-mounts `/proc`, `/sys`, `/dev`, `/run`, copies DNS, then runs `passwd` in chroot.
-- **Package Manager GUI**
-  Syncs Portage, installs Python3 & eix once, then launches a simple GUI helper under chroot.
-- **Installation Options**
-  Configure new user, CPU flags (`march`/`mtune`), cores, GPU drivers, and extra packages before final install.
-- **Automated Installation Script**
-  Background thread runs a data-driven sequence of commands (make.conf, world update, kernel, grub, user setup, etc.) with live log output.
+1. [Why Gentoo Helper?](#why-gentoohelper)
+2. [Prerequisites](#prerequisites)
+3. [Quick start (live‑USB)](#quick-start-live-usb)
+4. [Full installation guide](#full-installation-guide)
+5. [Frequently asked questions](#frequently-asked-questions)
+6. [Contributing & translation](#contributing--translation)
+7. [License](#license)
+
+---
+
+## Why Gentoo Helper?
+
+Manually installing Gentoo is powerful but verbose.  Gentoo Helper aims to provide a *guided, reproducible* path that still leaves the resulting system 100 % Gentoo—no custom binary repos, no wrappers—just a time‑saving wizard.
 
 ---
 
 ## Prerequisites
-| Live environment | Packages | Komenda (Gentoo) |
-|------------------|----------|------------------|
-| **GTK bindings** | `dev-python/pygobject` | `sudo emerge -av pygobject` |
-| **Partitioner**  | `gparted` | `sudo emerge -av gparted` |
-| **Text browser** | `links`   | `sudo emerge -av links` |
-| **Python deps**  | `pip`, `venv` <sup>†</sup> | `pip install -r requirements.txt` |
 
-<sup>†</sup> Projekt działa także w systemowym Pythonie; wirtualne środowisko jest opcjonalne, ale zalecane.
+| Requirement  | Package (Gentoo)       | Notes                                             |
+| ------------ | ---------------------- | ------------------------------------------------- |
+| GTK bindings | `dev-python/pygobject` | GUI library                                       |
+| Partitioner  | `gparted`              | Optional, launched by wizard                      |
+| Text browser | `links`                | Stage 3 download                                  |
+| Python 3.11+ | system package         | Wizard engine                                     |
+| **Optional** | `genkernel`            | Builds a generic kernel *if* you choose that path |
+
+> **Why genkernel?**  Many newcomers prefer a fast, working kernel before diving into *make menuconfig*.  Gentoo Helper offers both: **Genkernel** for “get me booting now”, or manual kernel configuration for advanced users.
 
 ---
 
-## Installation 🚀
+## Quick start (live‑USB)
+
 ```bash
-# 1. Pobierz repozytorium
+# 1. Boot any Gentoo‑based live medium with X11.
+#    Verify the network works and your clock is correct.
+
+# 2. Fetch the installer
 git clone https://github.com/youruser/gentoo-helper.git
 cd gentoo-helper
 
-# 2. (opcjonalnie) utwórz venv
+# 3. (optional) Create a virtual env
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Uruchom kreator
+# 4. Run the wizard
 python3 wizard.py
----
+```
 
-## Supported languages
-
-- Polish (pl)
-- English (en)
-- Other languages (German, French, Spanish, etc.) – in progress!
-  *See `i18n` directory and help us translate!*
+The wizard will: choose a disk, open GParted, download Stage 3, chroot, let you pick a kernel method, create **root** and an ordinary user, install the boot loader and extra packages.
 
 ---
 
-## Quick Start
+## Full installation guide
 
-1. Boot into a Gentoo live environment with X11 and GTK.
-2. Clone & run this tool.
-3. Follow the guided wizard – disk, partitions, Stage3, chroot, user & packages, install.
+1. **Select target disk** – lists `/dev/sdX`, `/dev/nvmeXn1`, etc.
+2. **Partition**
+
+   * BIOS: 1 × `boot` (ext2), 1 × `swap`, 1 × `root` (ext4/btrfs).
+   * UEFI: add a 512 MiB FAT32 EFI partition.
+3. **Pick partitions** – point the wizard at your `root` and (if UEFI) `boot`.
+4. **Download Stage 3** – wizard opens `links` to choose the latest snapshot.
+5. **Enter chroot** – mounts `proc`, `sys`, `dev`, `run` and copies DNS.
+6. **Set passwords & users**
+
+   * You *must* enter a **root password**.
+   * You *may* create a normal user **\<your\_username>** (see note below).
+7. **Choose a kernel option**
+
+   * *Genkernel* – quicker, uses distro defaults.
+   * *Manual* – drops you into `make menuconfig`.
+8. **Configure extra packages** – desktop environment, GPU drivers, Steam…
+9. **Install boot loader** – GRUB (BIOS/UEFI) or systemd‑boot.
+10. **Finish** – unmount, reboot, and enjoy your fresh Gentoo!
 
 ---
 
-## Contributing
+## Frequently asked questions
 
-Contributions and translations are very welcome!
-Please open a pull request or issue if you have suggestions, improvements, or want to add a new language.
+### “What is **\<your\_username> / yourname** in the docs?”
+
+It is a **placeholder** for the *Linux user account you create inside the new Gentoo system*, *not* your GitHub login.  Replace it everywhere with the actual username you typed in step 6 above.  Example:
+
+```bash
+useradd -m -G wheel,audio,video yourname   # becomes
+useradd -m -G wheel,audio,video adam
+```
+
+Home directory ⇒ `/home/adam`.
+
+### “I can’t log in after the first reboot”
+
+1. Use `root` + the password you set in the wizard.
+2. Log in as `<your_username>` only *after* you have created that user **inside the wizard**.  This account is brand‑new and unrelated to any external services.
+
+### “Do I have to use genkernel?”
+
+No.  Tick *Manual Kernel* and the wizard will drop you to a shell so you can compile a fully custom kernel.  Genkernel is just the convenient default.
+
+---
+
+## Contributing & translation
+
+Pull requests are welcome—bug fixes, UI tweaks, new language files.  Translation templates live under `i18n/`; copy `en.po` to your locale (e.g. `de.po`) and submit a PR.
 
 ---
 
 ## License
 
-MIT License
-See `LICENSE` file for details.
-
----
-
-## Screenshots
-
-*(You can add screenshots here to show how the wizard looks!)*
-
----
-
-## Notes
-
-- You can open a terminal at any time during the installation for manual commands.
-- After install, review your `/etc/portage/make.conf`, especially `MAKEOPTS` and language settings.
-- For additional tips, see the wiki or Issues section.
-
----
-
-MIT License – see [LICENSE](LICENSE) for details.
-
-## Opis po polsku
-
-Gentoo Helper to graficzny kreator instalacji Gentoo Linux w środowisku GTK.
-Przeprowadza krok po kroku przez partycjonowanie, pobieranie Stage3, chroot, konfigurację i pełną instalację systemu.
-
-**Polskie tłumaczenie i wsparcie – zapraszamy do współpracy!**
-
----
-# Gentoo Helper Installer
-
-A graphical installer and package manager GUI for Gentoo Linux.
-Supports full step-by-step installation (disk, EFI, Stage3, users, kernel, packages) and interactive package management in a running system.
-
-## Features
-- Guided disk partitioning and EFI/BIOS support
-- Automatic download and extraction of Stage3
-- Chroot environment setup
-- User and kernel configuration
-- Easy graphical package selection (GParted, Firefox, Steam, etc.)
-- Multi-language interface
-
-## Usage
-- Run `wizard.py` for the full graphical installer.
-- Run `main.py` to launch the package manager GUI in an existing Gentoo system.
-
-## Post-installation Tips
-After installation, review `/etc/portage/make.conf` and tune settings for your hardware.
-
-## Languages
-Polish, English, German, French, Spanish, Italian, Portuguese, Russian, Chinese, Japanese.
-
-## License
-MIT License (add LICENSE file if not present).
-
-## Support
-Please use GitHub Issues for questions and bug reports.
+Gentoo Helper is released under the **MIT License**.  See [LICENSE](LICENSE) for details.
 
