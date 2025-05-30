@@ -45,7 +45,7 @@ Manually installing Gentoo is powerful but verbose.  Gentoo Helper aims to pro
 #    Verify the network works and your clock is correct.
 
 # 2. Fetch the installer
-git clone https://github.com/youruser/gentoo-helper.git
+git clone https://github.com/Adam-szcz/Gentoo_Helper.git
 cd gentoo-helper
 
 # 3. (optional) Create a virtual env
