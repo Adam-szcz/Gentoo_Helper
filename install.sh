@@ -6,7 +6,7 @@ DEST="/opt/Gento_Helper"
 
 # Tworzenie katalogu
 sudo mkdir -p "$DEST"
-sudo cp -r assets languages prog com.gento.helper.policy install.sh LICENSE GentooHelper.desktop README.md disk_utils.py main.py wizard.py "$DEST/"
+sudo cp -r assets languages prog com.gento.helper.policy install.sh LICENSE GentooHelper.desktop README.md disk_utils.py steps_openrc_desktop_profile.py steps_systemd_desktop_profile.py main.py wizard.py "$DEST/"
 
 # PolicyKit
 sudo cp com.gento.helper.policy /usr/share/polkit-1/actions/

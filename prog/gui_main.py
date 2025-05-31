@@ -85,12 +85,12 @@ class GentooHelperApp(Gtk.Window):
         world_box.pack_start(self.world_combo, False, False, 5)
 
         # Install button
-        install_btn = Gtk.Button(label="Instaluj zaznaczone")
+        install_btn = Gtk.Button(label="Install selected")
         install_btn.connect("clicked", self.on_install_clicked)
         bottom_box.pack_start(install_btn, True, True, 5)
 
         # Uninstall button
-        uninstall_btn = Gtk.Button(label="Odinstaluj zaznaczone")
+        uninstall_btn = Gtk.Button(label="Uninstall selected")
         uninstall_btn.connect("clicked", self.on_uninstall_clicked)
         bottom_box.pack_start(uninstall_btn, True, True, 5)
 
@@ -144,7 +144,7 @@ class GentooHelperApp(Gtk.Window):
         dlg = Gtk.MessageDialog(
             parent=self, modal=True, destroy_with_parent=True,
             message_type=Gtk.MessageType.WARNING,
-            text="To GUI wymaga eix. Zainstalować?"
+            text="This GUI requires the app-portage/eix program. Run the program in the terminal!"
         )
         dlg.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
         dlg.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
@@ -154,7 +154,7 @@ class GentooHelperApp(Gtk.Window):
             if os.path.exists("/usr/bin/eix-update"):
                 subprocess.run(["/usr/bin/eix-update"], check=False)
             else:
-                print("Brak pliku /usr/bin/eix-update – instalacja eix mogła się nie powieść.")
+                print("The file /usr/bin/eix-update is missing – the eix installation may have failed.")
             dlg.destroy()
             self.populate_package_list()
         else:
@@ -196,7 +196,7 @@ class GentooHelperApp(Gtk.Window):
         else:
            pkgs = self.get_selected_packages()
            if not pkgs:
-               self.show_info("Nie zaznaczono żadnego pakietu.")
+               self.show_info("No package has been selected.")
                return
            self.installer.install_packages(pkgs)
 

@@ -21,8 +21,13 @@ from disk_utils import list_disks, list_partitions
 import shutil
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango
+def strip_version(pkgname: str) -> str:
+    """
+    Usuwa przyrostek wersji typu -2.0.1-r1 / -3-r2 / -20240512
+    Zostawia oryginał, gdy nic nie pasuje.
+    """
+    return re.sub(r"-\d[\w.\-]*$", "", pkgname)
 
-# ── blokada instancji ──────────────────────────────────────
 _LOCK_PATH = os.path.join(tempfile.gettempdir(), "gentoo_helper.lock")
 
 def show_duplicate_dialog_and_exit(pid=None):
@@ -39,7 +44,6 @@ def show_duplicate_dialog_and_exit(pid=None):
     return response == Gtk.ResponseType.YES
 
 def strip_version(pkgname):
-    # Usuwa końcówkę z wersją, np. -2.0.1-r1
     return re.sub(r"-\d[\w\.\-]*$", "", pkgname)
 
 def get_locked_pid(lock_path):
@@ -87,6 +91,7 @@ def set_language(code: str):
     """Dynamically (re)load language module into global `i18n`."""
     module = importlib.import_module(f"languages.i18n_{code}")
     globals()["i18n"] = module
+    import sys; sys.modules["i18n"] = module
 
 _SUPPORTED = {"pl", "en", "es", "fr", "de", "pt", "ru", "zh", "ja", "it"}
 
@@ -411,33 +416,38 @@ class SetupWizardWindow(Gtk.Window):
                 pass
             return 1   # init
 
-        shells   = {"bash", "zsh", "fish", "dash", "ash"}
-        terms    = {
-            "qterminal", "konsole", "xterm", "gnome-terminal-",
-            "xfce4-terminal", "lxterminal", "alacritty", "kitty"
+        shells = {"bash", "zsh", "fish", "dash", "ash", "sh"}
+        terms  = {
+            "qterminal", "konsole", "xterm",
+            "gnome-terminal-", "gnome-terminal",
+            "xfce4-terminal", "lxterminal",
+            "alacritty", "kitty", "tilix", "terminator"
         }
 
-        ppid  = os.getppid()          # rodzic (zwykle shell *albo* terminal)
-        pname = proc_comm(ppid)
+        # — w górę drzewa —
+        pid = os.getppid()
+        first_shell = None
+        first_term  = None
+        while pid and pid != 1:
+            name = proc_comm(pid)
+            if not first_shell and name in shells:
+                first_shell = pid
+            if not first_term and any(re.match(t, name) for t in terms):
+                first_term = pid
+            pid = proc_ppid(pid)
 
-        # 1) jeśli rodzicem jest powłoka → sprawdź dziadka
-        if pname in shells:
-            gpid  = proc_ppid(ppid)   # dziadek
-            gname = proc_comm(gpid)
-            if any(re.match(t, gname) for t in terms):
+        # — najpierw spróbuj zabić samą powłokę —
+        victim = first_shell or first_term
+        if victim:
+            for sig in (signal.SIGHUP, signal.SIGTERM):
                 try:
-                    os.kill(gpid, signal.SIGTERM)
+                    os.kill(victim, sig)
+                    break
                 except Exception:
                     pass
-            return
 
-        # 2) jeśli rodzicem **jest** terminal → zamknij go
-        if any(re.match(t, pname) for t in terms):
-            try:
-                os.kill(ppid, signal.SIGTERM)
-            except Exception:
-                pass
-
+        import sys
+        sys.exit(0)
 
     # ── posprzątaj paczkę gento_helper i zamknij kreator ──
     def _cleanup_and_quit(self, _btn=None):
@@ -818,7 +828,7 @@ class SetupWizardWindow(Gtk.Window):
         btn_openrc.connect("clicked", self._download_openrc)   
 
         btn_systemd = Gtk.Button(label="Pobierz Stage3 systemd")
-        btn_systemd.set_sensitive(False)          # na razie wyszarzony
+        btn_systemd.connect("clicked", self._download_systemd)
         ### ————————————————
 
         # pack widgets
@@ -918,6 +928,25 @@ class SetupWizardWindow(Gtk.Window):
 
         raise RuntimeError("Nie znalazłem ścieżki do Stage3 w latest-*.txt")
 
+    # ---------- URL do najnowszego stage3-systemd ----------
+    def _latest_stage3_systemd_url(self):
+        import urllib.request
+        base = "https://distfiles.gentoo.org/releases/amd64/autobuilds/"
+        txt = urllib.request.urlopen(
+            base + "latest-stage3-amd64-desktop-systemd.txt",
+            timeout=10
+        ).read().decode(errors="replace")
+
+        for raw in txt.splitlines():
+            line = raw.strip()
+            if (not line or line.startswith("#") or line.startswith("-----")
+                    or line.lower().startswith("md5")):
+                continue
+            rel_path = line.split()[0]
+            if rel_path.endswith(".tar.xz"):
+                return base + rel_path
+        raise RuntimeError("Nie znalazłem ścieżki do Stage3-systemd")
+
     # ---------------- pobieranie Stage3 (OpenRC) ----------------
     def _download_openrc(self, _btn):
         from pathlib import Path
@@ -991,6 +1020,61 @@ class SetupWizardWindow(Gtk.Window):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # ---------------- pobieranie Stage3 (systemd) ----------------
+    def _download_systemd(self, _btn):
+        from pathlib import Path
+        import urllib.request, threading, os
+        self._ensure_mounted(self.root_part, "/mnt/gentoo")
+
+        if Path("/mnt/gentoo/system.txt").exists():
+            return self._finish_stage3()
+
+        prev = self._find_stage3()
+        if prev:
+            return self._extract_stage3(prev)
+
+        self.step_box.foreach(lambda w: self.step_box.remove(w))
+
+        lbl = Gtk.Label(label="Pobieranie Stage3 (systemd)…")
+        lbl.get_style_context().add_class("h3")
+        lbl.set_xalign(0)
+
+        self.progress_bar.set_fraction(0)
+        self.progress_bar.set_show_text(True)
+        self.progress_bar.set_text("0 %")
+        self.progress_bar.show()
+
+        for w in (lbl, self.progress_label, self.progress_bar):
+            self.step_box.pack_start(w, False, False, 10)
+        self.step_box.show_all()
+
+        url  = self._latest_stage3_systemd_url()
+        dest = os.path.join("/mnt/gentoo", os.path.basename(url))
+
+        def worker():
+            try:
+                with urllib.request.urlopen(url) as r, open(dest, "wb") as f:
+                    total = int(r.getheader("Content-Length") or 0)
+                    done = 0; blk = 65536; last_pct = -1
+                    while True:
+                        chunk = r.read(blk)
+                        if not chunk:
+                            break
+                        f.write(chunk); done += len(chunk)
+                        if total:
+                            pct = int(done*100/total)
+                            if pct > last_pct:
+                                last_pct = pct
+                                GLib.idle_add(self.progress_bar.set_fraction, pct/100)
+                                GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
+                        else:
+                            GLib.idle_add(self.progress_bar.pulse)
+                GLib.idle_add(self.progress_bar.set_text, i18n.MESSAGES["extracting_text"])
+                GLib.idle_add(self._extract_stage3, dest)
+            except Exception as e:
+                GLib.idle_add(self._error_dialog, f"Błąd pobierania:\n{e}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _after_links(self, _pid, _status):
         # Called after the links terminal closes; proceed if a stage3 tarball was found
@@ -1148,6 +1232,16 @@ class SetupWizardWindow(Gtk.Window):
             "/mnt/gentoo/etc/resolv.conf"
         ], check=True)
 
+    def _detect_init_type(self) -> str:
+        """
+        Zwraca 'openrc' lub 'systemd' patrząc, co jest w stage3 pod /mnt/gentoo.
+        Wywołuj JĄ DOPIERO po rozpakowaniu tarballa!
+        """
+        if os.path.exists("/mnt/gentoo/sbin/openrc-run"):
+            return "openrc"
+        if os.path.exists("/mnt/gentoo/usr/lib/systemd"):
+            return "systemd"
+        return "openrc"          # bezpieczne domyślne
 
     def _finish_stage3(self):
         # bind system dirs and proceed to root password step
@@ -1406,7 +1500,7 @@ class SetupWizardWindow(Gtk.Window):
         self.locale_combo.set_active_id("pl_PL")
         grid.attach(self.locale_combo,        1, 0, 1, 1)
 
-        grid.attach(Gtk.Label(label="User:"),   0, 1, 1, 1)
+        grid.attach(Gtk.Label(label="Gentoo User:"),   0, 1, 1, 1)
         self.user_entry = Gtk.Entry()
         self.user_entry.set_text(getattr(self, "username", ""))
         grid.attach(self.user_entry,            1, 1, 1, 1)
@@ -1669,6 +1763,7 @@ class SetupWizardWindow(Gtk.Window):
     def start_installation(self):
         programy = ["net-libs/nodejs",
                     "sys-fs/ntfs3g",
+                    "xterm",
                     "sys-firmware/sof-firmware",
                     "net-wireless/blueman",
                     "app-admin/sudo",
@@ -1699,156 +1794,32 @@ class SetupWizardWindow(Gtk.Window):
                 f"(yes | etc-update --automode -3 && emerge {pkgs})"
             )
 
-        steps = [
-            (i18n.MESSAGES["step_export_vars"], (
-                f'export NASZUSER="{self.NASZUSER}" '
-                f'export NASZMARCH="{self.NASZMARCH}" '
-                f'export NASZMTUNE="{self.NASZMTUNE}" '
-                f'export COR="{self.NASZCOR}" '
-                f'export NASZINTEL="{self.NASZINTEL}" '
-                f'export NASZNVIDIA="{self.NASZNVIDIA}" '
-                f'export NASZAMD="{self.NASZAMD}" '
-                f'export NASZINTELIRIS="{self.NASZINTELIRIS}"'
-            )),
-#            (i18n.MESSAGES["step_config_makeconf_initial"],
- #f"""cat <<'EOF' >/etc/portage/make.conf
-# These settings were set by the catalyst build script that automatically
-# built this stage.
-# Please consult /usr/share/portage/config/make.conf.example for a more
-# detailed example.
-#COMMON_FLAGS="-O3 -pipe -flto"
-#CFLAGS="${{COMMON_FLAGS}}"
-#CXXFLAGS="${{COMMON_FLAGS}}"
-#FCFLAGS="${{COMMON_FLAGS}}"
-#FFLAGS="${{COMMON_FLAGS}}"
-#VIDEO_CARDS="{self.NASZINTEL} {self.NASZNVIDIA} {self.NASZAMD} {self.NASZINTELIRIS}"
-#MAKEOPTS="-j{self.NASZCOR}"
-# NOTE: This stage was built with the bindist USE flag enabled
+        #  ─── dynamiczny wybór listy kroków ─────────────
+        init_type = self._detect_init_type()
 
-# This sets the language of build output to English.
-# Please keep this setting intact when reporting bugs.
-#LC_MESSAGES=C.utf8
-#EOF"""
-#),
-            (i18n.MESSAGES["step_generate_locales"],
- f"""cat <<'EOF'>> /etc/locale.gen
-{self.LOCALE}.UTF-8 UTF-8
-en_US.UTF-8 UTF-8
-EOF"""
-),
-            (i18n.MESSAGES["step_eselect_locale"], f"locale-gen && eselect locale set {self.LOCALE}.utf8"),
-            (i18n.MESSAGES["step_sync_portage"], 'env-update && source /etc/profile && emerge --sync'),
-            #(i18n.MESSAGES["step_update_world"], 'env-update && source /etc/profile && emerge --update --deep --newuse @world'),
-            (i18n.MESSAGES["step_config_makeconf_final"],
- f"""cat <<'EOF' >/etc/portage/make.conf
-CHOST="x86_64-pc-linux-gnu"
-COMMON_FLAGS="-march={self.NASZMARCH} -mtune={self.NASZMTUNE} -O3 -pipe -flto"
-CFLAGS="${{COMMON_FLAGS}}"
-CXXFLAGS="${{COMMON_FLAGS}}"
-FCFLAGS="${{COMMON_FLAGS}}"
-FFLAGS="${{COMMON_FLAGS}}"
-MAKEOPTS="-j{self.NASZCOR}"
-VIDEO_CARDS="{self.NASZINTEL} {self.NASZNVIDIA} {self.NASZAMD} {self.NASZINTELIRIS}"
-USE="alsa pulseaudio vulkan opengl -systend -gpm"
-ACCEPT_LICENSE="*"
-ACCEPT_KEYWORDS="~amd64"
-LC_MESSAGES="pl_PL.UTF-8"
-LINGUAS="pl"
-#FEATURES="ccache"
-#CCACHE_DIR="$HOME/.ccache"
-GENTOO_MIRRORS="http://ftp.vectranet.pl/gentoo/ https://mirror.init7.net/gentoo/"
-EOF"""
-),
-            (i18n.MESSAGES["step_extra_cflags"], f'export EXTRA_CFLAGS="-march={self.NASZMARCH} -mtune={self.NASZMTUNE} -O3 -pipe -flto" && export EXTRA_CXXFLAGS="-march={self.NASZMARCH} -mtune={self.NASZMTUNE} -O3 -pipe -flto"'),
-            (i18n.MESSAGES["step_install_kernel"], 'emerge sys-kernel/gentoo-sources sys-kernel/genkernel'),
-            (i18n.MESSAGES["step_microcode"],
- f"""cat <<'EOF' >>/etc/genkernel.conf
-MICROCODE="intel"
-SANDBOX="yes"
-MAKEOPTS="$(portageq envvar MAKEOPTS)"
-EOF"""
-),
-            (i18n.MESSAGES["step_link_linux"], 'ln -sf /usr/src/linux-* /usr/src/linux'),
-            (i18n.MESSAGES["step_genkernel"], 'genkernel all'),
-            (i18n.MESSAGES["step_env_update"], 'env-update && source /etc/profile'),
-            (i18n.MESSAGES["step_repo"], 'emerge app-eselect/eselect-repository'),
-            (i18n.MESSAGES["step_eselect"], 'eselect repository enable guru steam-overlay'),
-            (i18n.MESSAGES["step_sync_overlays"], 'emerge --sync'),
-            (i18n.MESSAGES["step_update_world2"], 'env-update && source /etc/profile && emerge --update --deep --newuse @world'),
-            (i18n.MESSAGES["step_install_programs"], _auto_emerge(' '.join(programy))),
-            (i18n.MESSAGES["step_useradd"], f'useradd -m -G wheel,audio,video,input,tty -s /bin/bash {self.NASZUSER}'),
-            (i18n.MESSAGES["step_useradd"],
-f"""cat <<'EOF' >> /home/{self.NASZUSER}/.bash_profile
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-    sleep 5
-    exec startx
-fi
-EOF"""
-),
-            (i18n.MESSAGES["step_set_desktop_env"],
-f"""cat <<'EOF' >/home/{self.NASZUSER}/.xinitrc
-{env_data["start_cmd"]}
-EOF"""
-            ) if env_data["start_cmd"] else (
-            i18n.MESSAGES["step_set_desktop_env_xterm"],
-f"""touch /home/{self.NASZUSER}/.xinitrc"""
-),
-            (i18n.MESSAGES["step_sudoers"],
- f"""cat <<'EOF' >>/etc/sudoers
-{self.NASZUSER} ALL=(ALL:ALL) ALL
-EOF"""
-),
-            (i18n.MESSAGES["step_history"],
- f"""cat <<'EOF' >/home/{self.NASZUSER}/.bash_history
-sudo env-update && source /etc/profile && sudo emerge --update --deep --newuse @world &&
-sudo env-update && source /etc/profile && sudo emerge x11-drivers/xf86-video-intel x11-drivers/nvidia-drivers
-sudo nmtui
-sudo nano /etc/portage/make.conf
-sudo ccache -M 100G
-sudo ccache -s
-EOF"""
-),
-            (i18n.MESSAGES["step_history_chown"],
- f"""chown {self.NASZUSER}:{self.NASZUSER} /home/{self.NASZUSER}/.bash_history"""
-),
-            (i18n.MESSAGES["step_grub_time"],
- f"""cat <<'EOF' >>/etc/default/grub
-GRUB_TIMEOUT=0
-GRUB_TIMEOUT_STYLE=hidden
-EOF"""
-),
-            (i18n.MESSAGES["step_dbus"], 'rc-update add dbus default'),
-            (i18n.MESSAGES["step_networkmanager"], 'rc-update add NetworkManager default'),
-            (i18n.MESSAGES["step_autologin"], f'sed -i "s|^c1:.*agetty.*|c1:12345:respawn:/sbin/agetty --noclear -a {self.NASZUSER} 38400 tty1 linux|" /etc/inittab'),
-            ( "Install Gentoo Helper",
-              "bash /gento_helper/install.sh" ),
-
-]
-# --- GRUB installation step -------------------------------------------------
-
-        if self.efi_choice:
-            steps.append((i18n.MESSAGES["step_install_grub_uefi"], f'grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Gentoo && grub-mkconfig -o /boot/grub/grub.cfg'))
-        else:
-            steps.append((i18n.MESSAGES["step_install_grub_bios"], f'grub-install --target=i386-pc {self.selected_disk} && grub-mkconfig -o /boot/grub/grub.cfg'))
-# ---------------------------------------------------------------
+        if init_type == "openrc":
+            import steps_openrc_desktop_profile as steps_mod
+            self.steps = steps_mod.get_openrc_steps(self, env_data, programy)
+        else:                                       # systemd
+            import steps_systemd_desktop_profile as steps_mod
+            self.steps = steps_mod.get_systemd_steps(self, env_data, programy)
 
         # Which steps should be executed in the external terminal?
         external = {
-            #i18n.MESSAGES["step_update_world"],
             i18n.MESSAGES["step_install_kernel"],
             i18n.MESSAGES["step_genkernel"],
             i18n.MESSAGES["step_repo"],
             i18n.MESSAGES["step_update_world2"],
             i18n.MESSAGES["step_install_programs"],
-            i18n.MESSAGES["step_set_desktop_env"],  # jeżeli masz też krok "Środowisko LXQT"
-            i18n.MESSAGES["step_set_user_passwd"],   # jeżeli chodzi o "Ustawienia" (ustawienie hasła)
+            i18n.MESSAGES["step_set_desktop_env"],  
+            i18n.MESSAGES["step_set_user_passwd"],
             i18n.MESSAGES["step_install_grub_uefi"] if self.efi_choice else         i18n.MESSAGES["step_install_grub_bios"]
         }
 
 
 
-        total = len(steps)
-        for idx, (label, cmd) in enumerate(steps, 1):
+        total = len(self.steps)
+        for idx, (label, cmd) in enumerate(self.steps, 1):
             GLib.idle_add(self.append_log, f"→ {strip_version(label)}")
 
             full_cmd = ["chroot", "/mnt/gentoo", "/bin/bash", "-lc", cmd]
@@ -1901,11 +1872,11 @@ EOF"""
 
                         if m2:
                             cur, tot, full = m2.groups()
-                            pkg = full.split("::")[0]
-                            pkg = re.sub(r"-\d[0-9._-]*$", "", pkg)
+                            pkg = strip_version(full.split("::")[0])
                             last_i, last_tot, last_pkg = cur, tot, pkg
+
                             frac = int(cur) / int(tot)
-                            pct = int(frac * 100)
+                            pct  = int(frac * 100)
 
                             GLib.idle_add(self.progress_bar.set_fraction, frac)
                             GLib.idle_add(self.progress_bar.set_text, f"{pct} %")
@@ -1945,12 +1916,6 @@ EOF"""
 
                         if ">>> Completed" in clean:
                             GLib.idle_add(self.substep_bar.hide)
-
-        # Usuń pulsowanie, żeby sprawdzić poprawność wyświetlania
-        # if not seen_progress and not (m2 or m1 or m_pct):
-        #     GLib.idle_add(self.progress_bar.pulse)
-
-
                 proc.wait()
                 GLib.idle_add(self.progress_bar.hide)
                 GLib.idle_add(self.substep_bar.hide)
