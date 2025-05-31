@@ -1748,6 +1748,17 @@ class SetupWizardWindow(Gtk.Window):
         dialog.run()
         dialog.destroy()
 
+    # ----------------------------------------------------------
+    def _auto_emerge(self, pkgs: str) -> str:
+        """
+        Buduje komendę emerge z autounmask-write i powtórką po etc-update.
+        Używana w krokach „Install programs”.
+        """
+        return (
+            f"emerge --autounmask-write --autounmask-backtrack=y {pkgs} || "
+            f"(yes | etc-update --automode -3 && emerge {pkgs})"
+        )
+
     # ——— find an available terminal emulator ———
     def _pick_terminal(self):
         # Return the first terminal emulator found in PATH
@@ -1785,14 +1796,6 @@ class SetupWizardWindow(Gtk.Window):
 
         if env_data and env_data["packages"]:
             programy.append(env_data["packages"])
-
-        # Helper: run emerge with autounmask; if it fails with exit code 1,
-        # automatically accept changes in etc-update and retry.
-        def _auto_emerge(pkgs: str) -> str:
-            return (
-                f"emerge --autounmask-write --autounmask-backtrack=y {pkgs} || "
-                f"(yes | etc-update --automode -3 && emerge {pkgs})"
-            )
 
         #  ─── dynamiczny wybór listy kroków ─────────────
         init_type = self._detect_init_type()

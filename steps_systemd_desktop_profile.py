@@ -86,9 +86,8 @@ EOF"""),
         ("Install Xorg", 'emerge --noreplace x11-base/xorg-drivers x11-base/xorg-server x11-apps/xinit xterm'),
 
         # ── 9. Extra user software (unchanged) ────────────────────────────
-        (MESSAGES["step_install_programs"],
- lambda: wizard._auto_emerge(' '.join(programy)) if False else wizard._auto_emerge(' '.join(programy))
-),
+        (MESSAGES["step_install_programs"], wizard._auto_emerge(' '.join(programy))),
+
 
         # ── 10. User & autostart ──────────────────────────────────────────
 #        (MESSAGES["step_useradd"], f'useradd -m -G wheel,audio,video,input,tty -s /bin/bash {wizard.NASZUSER}'),

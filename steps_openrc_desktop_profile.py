@@ -76,9 +76,7 @@ EOF"""
         (MESSAGES["step_update_world2"],
          'env-update && source /etc/profile && emerge --update --deep --newuse @world'
         ),
-        (MESSAGES["step_install_programs"],
-         lambda: wizard._auto_emerge(' '.join(programy)) if False else wizard._auto_emerge(' '.join(programy))
-        ),
+        (MESSAGES["step_install_programs"], wizard._auto_emerge(' '.join(programy))),
         (MESSAGES["step_useradd"],
          f'useradd -m -G wheel,audio,video,input,tty -s /bin/bash {wizard.NASZUSER}'
         ),
