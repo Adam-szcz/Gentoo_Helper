@@ -14,7 +14,7 @@ def get_systemd_steps(wizard, env_data, programy):
 
     steps = [
         (
-            f"{MESSAGES['step_export_vars']}  [systemd]",  # ← etykieta kroku
+            f"{MESSAGES['step_export_vars']}  [systemd]",
             (
                 f'export NASZUSER="{wizard.NASZUSER}" '
                 f'export NASZMARCH="{wizard.NASZMARCH}" '
@@ -82,15 +82,11 @@ EOF"""),
         (MESSAGES["step_sync_overlays"], 'emerge --sync'),
         (MESSAGES["step_update_world2"], 'env-update && source /etc/profile && emerge --update --deep --newuse @world'),
 
-        # ── 8. Xorg metapackages ──────────────────────────────────────────
-        ("Install Xorg", 'emerge --noreplace x11-base/xorg-drivers x11-base/xorg-server x11-apps/xinit xterm'),
-
         # ── 9. Extra user software (unchanged) ────────────────────────────
         (MESSAGES["step_install_programs"], wizard._auto_emerge(' '.join(programy))),
 
-
         # ── 10. User & autostart ──────────────────────────────────────────
-#        (MESSAGES["step_useradd"], f'useradd -m -G wheel,audio,video,input,tty -s /bin/bash {wizard.NASZUSER}'),
+        (MESSAGES["step_useradd"], f'useradd -m -G wheel,audio,video,input,tty -s /bin/bash {wizard.NASZUSER}'),
 #        (MESSAGES["step_autostart_x"], f"""cat <<'EOF' >> /home/{wizard.NASZUSER}/.bash_profile
 #if [ -z \"$DISPLAY\" ] && [ \"$(tty)\" = \"/dev/tty1\" ]; then
 #    exec startx
@@ -105,14 +101,29 @@ EOF"""
 
         # ── 11. Sudoers & history ─────────────────────────────────────────
         (MESSAGES["step_sudoers"], f"""echo '{wizard.NASZUSER} ALL=(ALL:ALL) ALL' >> /etc/sudoers"""),
-        (MESSAGES["step_history"], f"touch /home/{wizard.NASZUSER}/.bash_history && chown {wizard.NASZUSER}:{wizard.NASZUSER} /home/{wizard.NASZUSER}/.bash_history"),
-
+        (MESSAGES["step_history"],
+         f"""cat <<'EOF' >/home/{wizard.NASZUSER}/.bash_history
+sudo env-update && source /etc/profile && sudo emerge --update --deep --newuse @world &&
+sudo env-update && source /etc/profile && sudo emerge x11-drivers/xf86-video-intel x11-drivers/nvidia-drivers
+sudo nmtui
+sudo nano /etc/portage/make.conf
+sudo ccache -M 100G
+sudo ccache -s
+EOF"""
+        ),
+        (MESSAGES["step_history_chown"],
+         f"chown {wizard.NASZUSER}:{wizard.NASZUSER} /home/{wizard.NASZUSER}/.bash_history"
+        ),
         # ── 12. GRUB tweak (timeout) ──────────────────────────────────────
-        (MESSAGES["step_grub_time"], "sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub"),
-
+        (MESSAGES["step_grub_time"],
+         f"""cat <<'EOF' >>/etc/default/grub
+GRUB_TIMEOUT=0
+GRUB_TIMEOUT_STYLE=hidden
+EOF"""
+        ),
         # ── 13. Enable core services ─────────────────────────────────────
-        (MESSAGES["step_dbus"],           'systemctl enable --now dbus-broker.socket'),
-        (MESSAGES["step_networkmanager"], 'systemctl enable --now NetworkManager.service'),
+
+        (MESSAGES["step_networkmanager"], "systemctl enable NetworkManager.service"),
 
         # ── 14. Autologin drop‑in with runtime‑dir + xorg dirs ────────────
         (MESSAGES["step_autologin"], f"""mkdir -p /etc/systemd/system/getty@tty1.service.d && cat <<'EOF' >/etc/systemd/system/getty@tty1.service.d/autologin.conf
@@ -120,14 +131,13 @@ EOF"""
 ExecStart=
 ExecStart=-/sbin/agetty --autologin {wizard.NASZUSER} --noclear %I $TERM
 EOF
-systemctl daemon-reload && systemctl restart getty@tty1
 """),
         # ── 15. Gentoo Helper script -------------------------------------
-        ("Install Gentoo Helper", 'bash /gento_helper/install.sh'),
+        ("Install Gentoo Helper", 'bash /gentoo_helper/install.sh'),
     ]
 
     # ── 16. i915 work‑arounds (optional) ─────────────────────────────────
-    steps.append(("Add i915 kernel params", "sed -i 's@^GRUB_CMDLINE_LINUX=\"@&i915.enable_psr=0 i915.enable_dp_mst=0 video=DP-2:d @' /etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg"))
+    #steps.append(("Add i915 kernel params", "sed -i 's@^GRUB_CMDLINE_LINUX=\"@&i915.enable_psr=0 i915.enable_dp_mst=0 video=DP-2:d @' /etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg"))
 
     # ── 17. GRUB install step (EFI/BIOS) ---------------------------------
     if wizard.efi_choice:

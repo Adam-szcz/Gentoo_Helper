@@ -316,14 +316,14 @@ class SetupWizardWindow(Gtk.Window):
 
     def _copy_helper_tree(self, dest_root: str):
         """
-        Kopiuje Gentoo Helpera do <dest_root>/gento_helper
+        Kopiuje Gentoo Helpera do <dest_root>/gentoo_helper
         – pomija katalogi __pycache__ i pliki *.pyc.
         """
         from pathlib import Path, PurePosixPath
         import shutil, os, fnmatch
 
-        src_root = Path(__file__).resolve().parent          # katalog z wizard.py
-        dest_dir = Path(dest_root) / "gento_helper"
+        src_root = Path(__file__).resolve().parent       
+        dest_dir = Path(dest_root) / "gentoo_helper"
 
         if dest_dir.exists():
             shutil.rmtree(dest_dir)
@@ -1774,15 +1774,17 @@ class SetupWizardWindow(Gtk.Window):
     def start_installation(self):
         programy = ["net-libs/nodejs",
                     "sys-fs/ntfs3g",
-                    "xterm",
                     "sys-firmware/sof-firmware",
                     "net-wireless/blueman",
                     "app-admin/sudo",
+                    "x11-base/xorg-drivers",
                     "x11-base/xorg-server",
+                    "x11-apps/xinit",
                     "x11-apps/mesa-progs",
+                    "x11-misc/arandr",
+                    "xterm",
                     "media-libs/mesa",
                     "net-misc/networkmanager",
-                    "x11-misc/arandr",
                     "net-p2p/qbittorrent",
                     "app-editors/pluma",
                     "media-sound/alsa-utils",
@@ -1806,6 +1808,8 @@ class SetupWizardWindow(Gtk.Window):
         else:                                       # systemd
             import steps_systemd_desktop_profile as steps_mod
             self.steps = steps_mod.get_systemd_steps(self, env_data, programy)
+
+        self._copy_helper_tree("/mnt/gentoo")
 
         # Which steps should be executed in the external terminal?
         external = {

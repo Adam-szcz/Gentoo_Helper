@@ -88,7 +88,6 @@ if [ -z \"$DISPLAY\" ] && [ \"$(tty)\" = \"/dev/tty1\" ]; then
 fi
 EOF"""
         ),
-        # .xinitrc tylko gdy jest start_cmd
         *([
             (
                 MESSAGES["step_set_desktop_env"],
@@ -126,9 +125,7 @@ EOF"""
         (MESSAGES["step_autologin"],
          f'sed -i "s|^c1:.*agetty.*|c1:12345:respawn:/sbin/agetty --noclear -a {wizard.NASZUSER} 38400 tty1 linux|" /etc/inittab'
         ),
-        ("Install Gentoo Helper",
-         'bash /gento_helper/install.sh'
-        ),
+        ("Install Gentoo Helper", 'bash /gentoo_helper/install.sh'),
     ]
 
     # --- EFI / BIOS → GRUB step appended dynamically (same logic as OpenRC) ---
